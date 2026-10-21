@@ -1,0 +1,217 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Paleta oficial — PixTune Brandbook v1.0 */
+    --pt-bg: 7 15 20; /* Deep Navy #070F14 */
+    --pt-surface: 11 20 26;
+    --pt-surface-elevated: 16 27 34;
+    --pt-border: 30 45 54;
+    --pt-primary: 30 215 96; /* PixTune Green #1ED760 */
+    --pt-primary-hover: 23 191 84;
+    --pt-cyan: 0 224 255; /* PixTune Cyan #00E0FF */
+    --pt-aqua: 0 239 255; /* PixTune Aqua #00EFFF */
+    --pt-black: 3 7 11; /* Black #03070B */
+    --pt-text: 255 255 255;
+    --pt-text-secondary: 157 160 162; /* Muted #9DA0A2 */
+    --pt-text-muted: 122 132 137;
+    --pt-danger: 255 90 103;
+    --pt-warning: 255 179 0;
+    --pt-success: 30 215 96;
+  }
+
+  html {
+    color-scheme: dark;
+  }
+
+  html:not(.reduce-motion) {
+    scroll-behavior: smooth;
+  }
+
+  html.high-contrast {
+    --pt-bg: 3 7 11;
+    --pt-surface: 3 7 11;
+    --pt-surface-elevated: 12 22 29;
+    --pt-border: 122 132 137;
+    --pt-text-secondary: 235 238 240;
+    --pt-text-muted: 215 220 224;
+  }
+
+  * {
+    @apply border-pixtune-border;
+  }
+
+  body {
+    @apply bg-pixtune-bg text-pixtune-text min-h-screen antialiased;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+
+  h1,
+  h2,
+  h3 {
+    font-family: 'Space Grotesk', 'Inter', system-ui, 'Segoe UI', sans-serif;
+    letter-spacing: -0.015em;
+  }
+
+  ::selection {
+    @apply bg-pixtune-primary/30 text-pixtune-text;
+  }
+
+  :focus-visible {
+    @apply outline-none ring-2 ring-pixtune-primary ring-offset-2 ring-offset-pixtune-bg;
+  }
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 font-medium text-body-sm transition-all duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pixtune-primary focus-visible:ring-offset-2 focus-visible:ring-offset-pixtune-bg disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .btn-primary {
+    @apply btn bg-gradient-to-r from-pixtune-primary to-pixtune-cyan font-semibold text-pixtune-black shadow-glow-green hover:brightness-105 active:scale-[0.98];
+  }
+
+  .btn-secondary {
+    @apply btn border border-pixtune-border bg-pixtune-surfaceElevated text-pixtune-text hover:border-pixtune-primary/40 hover:bg-pixtune-border active:scale-[0.98];
+  }
+
+  .btn-ghost {
+    @apply btn bg-transparent text-pixtune-textSecondary hover:bg-pixtune-primaryMuted hover:text-pixtune-primary active:scale-[0.98];
+  }
+
+  .btn-danger {
+    @apply btn bg-pixtune-danger font-semibold text-pixtune-black hover:brightness-105 active:scale-[0.98] shadow-[0_2px_8px_rgba(255,90,103,0.24)];
+  }
+
+  .card {
+    @apply bg-pixtune-surface border border-pixtune-border rounded-xl overflow-hidden transition-all duration-normal;
+  }
+
+  .card-hover {
+    @apply card hover:border-pixtune-primary/30 hover:shadow-pixtune;
+  }
+
+  .input {
+    @apply w-full bg-pixtune-surfaceElevated border border-pixtune-border text-pixtune-text placeholder-pixtune-textMuted rounded-lg px-4 py-2.5 text-body transition-all duration-fast focus:border-pixtune-primary focus:ring-2 focus:ring-pixtune-primary/20 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .label {
+    @apply block text-body-sm font-medium text-pixtune-textSecondary mb-1.5;
+  }
+
+  .badge {
+    @apply inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-caption font-medium;
+  }
+
+  .badge-primary {
+    @apply badge bg-pixtune-primaryMuted text-pixtune-primary;
+  }
+
+  .badge-success {
+    @apply badge bg-pixtune-success/15 text-pixtune-success;
+  }
+
+  .badge-warning {
+    @apply badge bg-pixtune-warning/15 text-pixtune-warning;
+  }
+
+  .badge-danger {
+    @apply badge bg-pixtune-danger/15 text-pixtune-danger;
+  }
+
+  .badge-info {
+    @apply badge bg-pixtune-cyan/15 text-pixtune-cyan;
+  }
+
+  .badge-neutral {
+    @apply badge bg-pixtune-surfaceElevated text-pixtune-textSecondary border border-pixtune-border;
+  }
+
+  .scrollbar-thin {
+    @apply scrollbar-thin scrollbar-track-pixtune-bg scrollbar-thumb-pixtune-border hover:scrollbar-thumb-pixtune-textMuted;
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+
+  .animate-in {
+    animation: fadeIn 0.3s ease-out, slideUp 0.4s ease-out;
+  }
+
+  .glass {
+    @apply bg-pixtune-surface/80 backdrop-blur-xl border border-pixtune-border;
+  }
+
+  .gradient-brand {
+    background-image: linear-gradient(90deg, rgb(var(--pt-primary)), rgb(var(--pt-cyan)));
+  }
+
+  .gradient-text {
+    @apply bg-gradient-to-r from-pixtune-primary to-pixtune-cyan bg-clip-text text-transparent;
+  }
+
+  .hero-glow {
+    background:
+      radial-gradient(circle at 82% 12%, rgb(var(--pt-cyan) / 0.12), transparent 38%),
+      radial-gradient(circle at 18% 4%, rgb(var(--pt-primary) / 0.14), transparent 34%);
+  }
+
+  .ring-high-contrast {
+    @apply ring-2 ring-pixtune-textSecondary ring-offset-2 ring-offset-pixtune-bg;
+  }
+}
+
+/* Custom scrollbar for webkit */
+.scrollbar-thin::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: rgb(var(--pt-bg));
+}
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: rgb(var(--pt-border));
+  border-radius: 3px;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb:hover {
+  background: rgb(var(--pt-text-muted));
+}
+
+/* Hide scrollbar for Firefox */
+.scrollbar-hide {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+
+/* Acessibilidade: respeita a preferência do sistema e o controle do produto. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  html:not(.reduce-motion) {
+    scroll-behavior: auto;
+  }
+}
+
+html.reduce-motion *,
+html.reduce-motion *::before,
+html.reduce-motion *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
+}

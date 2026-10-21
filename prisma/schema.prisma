@@ -1,0 +1,178 @@
+// PixTune Database Schema
+// SQLite para desenvolvimento local, migrações versionadas
+//
+// Notas de compatibilidade SQLite:
+// - String[] (listas) não suportado → usar String (JSON serializado)
+// - Json tipo não suportado → usar String (JSON serializado)
+// - Relação 1:1 requer @unique no campo da chave estrangeira
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  name          String?
+  passwordHash  String
+  avatarUrl     String?
+  // UID do Firebase Authentication, quando a conta entra pelo Google via Firebase.
+  // Login por e-mail/senha continua sem firebaseUid.
+  firebaseUid   String?   @unique
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  sessions      Session[]
+  settings      Settings?
+  integrations  Integration[]
+  donationRules DonationRule[]
+  queueItems    QueueItem[]
+  donationEvents DonationEvent[]
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([token])
+}
+
+model Settings {
+  id                    String   @id @default(cuid())
+  userId                String   @unique
+  // Live Pix
+  livepixConnected      Boolean  @default(false)
+  livepixAccessToken    String?
+  livepixRefreshToken   String?
+  livepixTokenExpiresAt DateTime?
+  // Music Provider
+  musicProvider         String   @default("youtube") // demo, youtube, spotify
+  musicConnected        Boolean  @default(false)
+  musicAccessToken      String?
+  musicRefreshToken     String?
+  musicTokenExpiresAt   DateTime?
+  // Playback
+  autoPlay              Boolean  @default(true)
+  defaultVolume         Int      @default(70)
+  crossfade             Boolean  @default(false)
+  // UI
+  theme                 String   @default("dark")
+  compactMode           Boolean  @default(false)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Integration {
+  id            String   @id @default(cuid())
+  userId        String
+  type          String   // livepix, youtube, spotify
+  name          String
+  accessToken   String?
+  refreshToken  String?
+  expiresAt     DateTime?
+  scopes        String   @default("[]") // JSON serializado
+  isActive      Boolean  @default(true)
+  metadata      String?  // JSON serializado
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, type])
+  @@index([userId])
+}
+
+model DonationRule {
+  id          String   @id @default(cuid())
+  userId      String
+  name        String
+  description String?
+  // Trigger conditions
+  minAmount   Int      @default(100) // em centavos
+  maxAmount   Int?
+  keywords    String   @default("[]") // JSON serializado
+  // Action
+  action      String   // add_to_queue, play_next, skip, pause, resume, volume_up, volume_down
+  actionData  String?  // JSON serializado: { trackId, playlistId, volumeDelta, etc }
+  // Limits
+  cooldownMs  Int      @default(30000) // 30s default
+  maxPerHour  Int      @default(10)
+  isActive    Boolean  @default(true)
+  priority    Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user                User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  matchedEvents       DonationEvent[] // relação inversa para matchedRule
+
+  @@index([userId])
+}
+
+model QueueItem {
+  id          String   @id @default(cuid())
+  userId      String
+  // Track info
+  title       String
+  artist      String?
+  album       String?
+  artworkUrl  String?
+  durationMs  Int?
+  sourceUrl   String?
+  provider    String   @default("demo") // demo, youtube, spotify, local
+  providerId  String?  // ID na plataforma original
+  // Queue metadata
+  position    Int      @default(0)
+  addedBy     String   @default("streamer") // streamer, donation, demo
+  donationEventId String? @unique // 1:1 com DonationEvent
+  // Status
+  status      String   @default("pending") // pending, playing, played, skipped, failed
+  playedAt    DateTime?
+  createdAt   DateTime @default(now())
+
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  donationEvent DonationEvent? @relation(fields: [donationEventId], references: [id])
+
+  @@index([userId, status])
+  @@index([userId, position])
+}
+
+model DonationEvent {
+  id              String   @id @default(cuid())
+  userId          String
+  // Live Pix data
+  livepixEventId  String   @unique
+  donorName       String
+  donorMessage    String?
+  amountCents     Int
+  currency        String   @default("BRL")
+  // Processing
+  status          String   @default("received") // received, validated, processed, failed, duplicate
+  matchedRuleId   String?
+  errorMessage    String?
+  processedAt     DateTime?
+  // Metadata
+  rawPayload      String?  // JSON serializado
+  isDemo          Boolean  @default(false)
+  createdAt       DateTime @default(now())
+
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  matchedRule     DonationRule? @relation(fields: [matchedRuleId], references: [id])
+  queueItem       QueueItem?
+
+  @@index([userId, createdAt])
+  @@index([userId, status])
+  @@index([livepixEventId])
+}
