@@ -46,7 +46,7 @@ A detecção é heurística. Ela foi feita para ser previsível e conservadora, 
 | Roteamento | React Router 6 |
 | Backend | Hono (Node.js puro) |
 | Banco | SQLite via Prisma ORM |
-| Autenticação | E-mail/senha (JWT + sessões no banco, `scrypt`) e Google via **Firebase Authentication** |
+| Autenticação | E-mail/senha (JWT + sessões no banco, `scrypt`) |
 | Validação | Zod |
 | Detecção musical | iTunes Search API + YouTube Data API v3 |
 | Reprodução | IFrame Player API oficial do YouTube (áudio) |
@@ -132,77 +132,6 @@ A cota gratuita padrão é de 10.000 unidades por dia. Cada chamada de `search.l
 
 As credenciais do Live Pix são informadas em **Configurações → Live Pix** e ficam no banco local (SQLite). Nenhuma credencial real vem preenchida no repositório.
 
-### Login com Google (Firebase Authentication)
-
-O login com Google usa o **Firebase Authentication** (provedor Google). Fluxo:
-
-```
-Popup do Google (SDK do Firebase, no navegador)
-        ↓
-ID token do Firebase
-        ↓
-POST /api/auth/firebase
-        ↓
-Servidor valida com o firebase-admin
-        ↓
-Cria a sessão PixTune (mesmo JWT/sessão do login por e-mail/senha)
-```
-
-O login por **e-mail/senha** continua funcionando. Uma conta criada pelo Google recebe uma senha
-aleatória inutilizável — o acesso é sempre pelo Google.
-
-- **No navegador:** apenas a configuração pública do app Web (`VITE_FIREBASE_*`).
-- **Só no servidor:** o project ID (reaproveitado de `VITE_FIREBASE_PROJECT_ID`), usado para conferir
-  o `aud` do token. A assinatura é validada com as **chaves públicas** do Google, então **não é
-  obrigatório** baixar uma conta de serviço. Se quiser habilitar também a checagem de revogação de
-  token, informe `GOOGLE_APPLICATION_CREDENTIALS` ou `FIREBASE_SERVICE_ACCOUNT`.
-
-#### Passo a passo (gratuito — plano Spark)
-
-1. Crie um projeto no [Firebase Console](https://console.firebase.google.com) (ex.: `pixtune-82fe9`).
-2. **Authentication → Começar → Sign-in method → Google → Ativar**.
-3. **Configurações do projeto → Geral → Seus apps → App Web (`</>`)**. Registre e copie a configuração.
-4. Preencha o `.env` (variáveis do **cliente**; reinicie o `npm run dev` depois):
-
-```env
-VITE_FIREBASE_API_KEY="sua-api-key"
-VITE_FIREBASE_AUTH_DOMAIN="pixtune-82fe9.firebaseapp.com"
-VITE_FIREBASE_PROJECT_ID="pixtune-82fe9"
-VITE_FIREBASE_STORAGE_BUCKET="pixtune-82fe9.firebasestorage.app"
-VITE_FIREBASE_APP_ID="1:0000000000:web:abcdef"
-VITE_FIREBASE_MESSAGING_SENDER_ID="0000000000"
-```
-
-   Com isso o login já funciona: o servidor lê o project ID do próprio bloco acima.
-
-5. **(Opcional)** Para checar revogação de token, gere a conta de serviço em
-   **Configurações do projeto → Contas de serviço → Gerar nova chave privada** e escolha **uma** opção:
-
-```env
-GOOGLE_APPLICATION_CREDENTIALS="C:/caminho/serviceAccountKey.json"
-# ou o JSON inteiro em uma linha:
-FIREBASE_SERVICE_ACCOUNT={"type":"service_account","project_id":"..."}
-```
-
-   O `.env` está no `.gitignore` — **nunca** comite essa chave.
-
-6. **Authentication → Settings → Domínios autorizados**: `localhost` já vem por padrão; adicione o
-   domínio de produção quando publicar (ex.: `pixtune.web.app`).
-7. Reinicie API e frontend. Confira `GET /api/auth/firebase/status` → `{"configured":true}` e use o
-   botão **Continuar com Google** em Login/Cadastro.
-
-**Erros comuns**
-
-| Sintoma | Causa provável |
-|---------|----------------|
-| Botão desabilitado + `configured:false` | Faltam `VITE_FIREBASE_*` no `.env` (passo 4) |
-| `auth/unauthorized-domain` | Domínio não está em *Authentication → Domínios autorizados* |
-| `auth/operation-not-allowed` | Provedor Google não está ativado no Firebase |
-| `FIREBASE_NOT_CONFIGURED` (HTTP 503) | API sem project ID — preencha `VITE_FIREBASE_PROJECT_ID` |
-
-> O Firebase Auth identifica **quem** é a conta. Ele não altera a reprodução nem dá acesso a YouTube
-> Music/Premium — veja [Reprodução](#reprodução).
-
 ### Conectar a conta do YouTube (OAuth 2.0)
 
 A seção **Configurações → YouTube** conecta o canal via OAuth 2.0 oficial do Google e autoriza a
@@ -233,44 +162,11 @@ Sem esses valores, a seção **Configurações → YouTube** aparece desativada 
 Escopos do YouTube são sensíveis/restritos: para uso público o Google exige verificação do app; em
 modo de teste apenas os usuários de teste autorizam.
 
-### Hospedagem (Firebase Hosting)
+### Hospedagem
 
-O Firebase Hosting serve **arquivos estáticos**. O backend do PixTune (Hono + Prisma/SQLite +
-webhooks do Live Pix) precisa de um runtime Node e **não** roda no Hosting. Arranjo recomendado:
-
-- **Frontend** (`dist/client`) → Firebase Hosting.
-- **API** (Hono) → Cloud Run (ou Render/Fly/VPS), com rewrite `/api/**` do Hosting para a API.
-
-O repositório já traz `firebase.json` e `.firebaserc` prontos para esse arranjo.
-
-1. Instale a CLI e faça login:
-
-```bash
-npm i -g firebase-tools
-firebase login
-```
-
-2. Aponte o projeto: edite `.firebaserc` (`default`) ou rode `firebase use --add`. Ajuste em
-   `firebase.json` o `run.serviceId` (`pixtune-api`) e a `region` do seu serviço no Cloud Run.
-3. Gere o build do frontend:
-
-```bash
-npm run build:client
-```
-
-4. Publique:
-
-```bash
-firebase deploy --only hosting
-```
-
-5. **CORS**: inclua o domínio do Hosting em `CORS_ORIGINS` no `.env` da API
-   (`https://pixtune.web.app`).
-
-> A cota gratuita (Spark) cobre **Authentication** e **Hosting**. Publicar a API no **Cloud Run**
-> exige o plano **Blaze** (pagamento por uso, com franquia gratuita mensal) — por isso o deploy da API
-> fica a seu critério. Se a API ficar em outro provedor, remova o rewrite `/api/**` do `firebase.json`,
-> aponte `VITE_API_URL` para a API no build e ajuste `CORS_ORIGINS`.
+O frontend é estático (`dist/client`) e pode ser servido por qualquer host de arquivos estáticos.
+O backend (Hono + Prisma/SQLite + webhooks do Live Pix) precisa de um runtime Node e **não** roda
+em host estático. Inclua o domínio do frontend em `CORS_ORIGINS` no `.env` da API.
 
 ---
 
@@ -301,7 +197,6 @@ src/
 │   ├── components/          # UI e proteção de rotas
 │   ├── contexts/            # AuthContext
 │   ├── layouts/             # PublicLayout, AppLayout
-│   ├── lib/firebase.ts      # Inicialização do Firebase Auth (Google)
 │   ├── player/              # Player global de áudio do YouTube
 │   └── pages/               # Landing, Login, Register, Dashboard, Fila, Histórico, Regras, Configurações
 ├── shared/                  # Tipos, utilitários e parsing de links do YouTube
@@ -312,7 +207,7 @@ src/
     ├── lib/prisma.ts
     ├── middleware/auth.ts   # JWT + sessão + isolamento por userId
     ├── routes/              # auth, donations, queue, music, settings, rules, youtube
-    └── services/            # auth, firebaseAdmin, googleOAuth, livepix, rules, songRequest, youtube
+    └── services/            # auth, googleOAuth, livepix, rules, songRequest, youtube
 prisma/schema.prisma         # User, Session, Settings, Integration, DonationEvent, DonationRule, QueueItem...
 ```
 
@@ -353,6 +248,21 @@ prisma/schema.prisma         # User, Session, Settings, Integration, DonationEve
    - ignora mensagens que não são pedidos musicais;
    - coloca a faixa na fila por prioridade de valor; se for a maior, derruba a atual e toca na hora;
    - registra `processed`, `validated` (aguardando link), `ignored` ou `failed`.
+
+### Status, teste e desconexão
+
+- **Salvar configuração** valida as credenciais na hora: o backend emite/usa o token
+  OAuth2 e consulta `GET /v2/account`. Se o LivePix recusar, nada é salvo e o motivo
+  aparece no formulário. Se o campo **Client Secret** for enviado em branco, o secret já
+  salvo é mantido (o servidor nunca devolve o secret para o navegador).
+- O status **Conectado** só aparece quando as credenciais já foram aceitas pelo LivePix.
+  A tela mostra a conta autenticada (`@usuario`) e a data da última verificação.
+- **Testar conexão** (`POST /api/donations/config/verify`) revalida na hora; enquanto o
+  token em cache for válido, nenhum token novo é emitido (respeita o limite do LivePix).
+- **Desconectar** (`POST /api/donations/config/disconnect`) apaga Client ID, Client
+  Secret e tokens do banco, marca a integração como inativa (o webhook passa a responder
+  `503`) e tenta remover no LivePix o webhook desta instalação. A URL de webhook é
+  mantida: ao reconectar, a mesma URL volta a funcionar sem precisar cadastrá-la de novo.
 
 ### Prioridade por valor é a regra do sistema
 
@@ -542,7 +452,6 @@ para músicas doadas e enquanto houver doações pendentes.
 - Segredos apenas no backend; o frontend nunca recebe `passwordHash`, `clientSecret` ou tokens de terceiros.
 - A chave do YouTube fica no `.env` do servidor e nunca é enviada ao navegador.
 - Na conexão do canal do YouTube (OAuth do Google), o `client_secret` fica só no servidor; o navegador recebe apenas a URL de autorização. O `state` é assinado (JWT) e vinculado a um cookie `HttpOnly` anti-CSRF.
-- No login com Google (Firebase), o navegador só conhece a configuração pública do app Web. O **ID token** é validado no servidor com o `firebase-admin`; a conta de serviço nunca vai ao cliente.
 - As credenciais do Live Pix ficam no banco local em texto simples (metadata da integração). O mesmo vale para os tokens de atualização do YouTube. Para produção, criptografe esses campos ou use um cofre de segredos.
 - `.env` fora do Git; `.env.example` sem credenciais.
 - Mensagens de erro de login não revelam se o e-mail existe.

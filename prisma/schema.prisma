@@ -21,9 +21,6 @@ model User {
   name          String?
   passwordHash  String
   avatarUrl     String?
-  // UID do Firebase Authentication, quando a conta entra pelo Google via Firebase.
-  // Login por e-mail/senha continua sem firebaseUid.
-  firebaseUid   String?   @unique
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 

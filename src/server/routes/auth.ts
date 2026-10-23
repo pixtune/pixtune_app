@@ -1,10 +1,7 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
-import crypto from 'crypto'
-import { createUser, verifyUserCredentials, createSession, hashPassword } from '../services/auth'
-import prisma from '../lib/prisma'
-import { isFirebaseConfigured, verifyFirebaseIdToken } from '../services/firebaseAdmin'
+import { createUser, verifyUserCredentials, createSession } from '../services/auth'
 
 const auth = new Hono()
 
@@ -106,100 +103,6 @@ auth.post('/logout', async (c) => {
     await removeSession(token)
   }
   return c.json({ success: true })
-})
-
-// ============================================================
-// Login com Google via Firebase Authentication
-// ============================================================
-// O cliente autentica no Firebase (popup/redirect do provedor Google) e
-// envia o ID token. Aqui validamos o token com o firebase-admin e trocamos
-// por uma sessão PixTune — o mesmo mecanismo dos logins por e-mail/senha.
-// Nenhum segredo do Firebase fica no navegador.
-
-const firebaseLoginSchema = z.object({
-  idToken: z.string().min(10, 'ID token inválido'),
-})
-
-auth.get('/firebase/status', (c) => {
-  return c.json({ success: true, data: { configured: isFirebaseConfigured() } })
-})
-
-auth.post('/firebase', zValidator('json', firebaseLoginSchema), async (c) => {
-  if (!isFirebaseConfigured()) {
-    return c.json(
-      {
-        success: false,
-        error: {
-          code: 'FIREBASE_NOT_CONFIGURED',
-          message: 'Login com Firebase não está configurado no servidor.',
-        },
-      },
-      503
-    )
-  }
-
-  const { idToken } = c.req.valid('json')
-
-  try {
-    const info = await verifyFirebaseIdToken(idToken)
-
-    if (!info.email) {
-      return c.json(
-        {
-          success: false,
-          error: { code: 'FIREBASE_NO_EMAIL', message: 'A conta Google não retornou um e-mail.' },
-        },
-        400
-      )
-    }
-
-    const email = info.email.toLowerCase()
-    let user = await prisma.user.findFirst({
-      where: { OR: [{ firebaseUid: info.uid }, { email }] },
-    })
-
-    if (!user) {
-      // Conta criada pelo Google/Firebase: senha aleatória inutilizável.
-      const passwordHash = await hashPassword(crypto.randomBytes(32).toString('hex'))
-      user = await prisma.user.create({
-        data: {
-          email,
-          passwordHash,
-          name: info.name,
-          avatarUrl: info.picture,
-          firebaseUid: info.uid,
-        },
-      })
-      await prisma.settings.create({ data: { userId: user.id } }).catch(() => {})
-    } else if (!user.firebaseUid) {
-      // Conta já existente (e-mail/senha): vincula o UID do Firebase.
-      user = await prisma.user.update({
-        where: { id: user.id },
-        data: { firebaseUid: info.uid },
-      })
-    }
-
-    const session = await createSession(user.id)
-
-    return c.json({
-      success: true,
-      data: {
-        user: { id: user.id, email: user.email, name: user.name, avatarUrl: user.avatarUrl },
-        token: session,
-      },
-    })
-  } catch {
-    return c.json(
-      {
-        success: false,
-        error: {
-          code: 'FIREBASE_TOKEN_INVALID',
-          message: 'Não foi possível validar o login do Firebase.',
-        },
-      },
-      401
-    )
-  }
 })
 
 export default auth

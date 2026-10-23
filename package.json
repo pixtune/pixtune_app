@@ -32,8 +32,6 @@
     "@radix-ui/react-toast": "^1.1.5",
     "@radix-ui/react-tooltip": "^1.0.7",
     "clsx": "^2.1.0",
-    "firebase": "^11.10.0",
-    "firebase-admin": "^14.5.0",
     "hono": "^4.2.0",
     "jsonwebtoken": "^9.0.2",
     "lucide-react": "^0.344.0",

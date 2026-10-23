@@ -226,14 +226,26 @@ function useConnectionStatus() {
 
   useEffect(() => {
     let cancelled = false
-    apiDonations.config().then((lp) => {
-      if (cancelled) return
-      setLivepixStatus(lp.data?.configured ? 'connected' : 'disconnected')
-    }).catch(() => {
-      if (!cancelled) setLivepixStatus('disconnected')
-    })
+
+    function load() {
+      apiDonations
+        .config()
+        .then((lp) => {
+          if (cancelled) return
+          // Só mostra "Conectado" quando as credenciais já foram validadas
+          // pelo LivePix (conta em cache), não apenas quando estão salvas.
+          setLivepixStatus(lp.data?.connected ? 'connected' : 'disconnected')
+        })
+        .catch(() => {
+          if (!cancelled) setLivepixStatus('disconnected')
+        })
+    }
+
+    load()
+    window.addEventListener('pixtune:livepix-changed', load)
     return () => {
       cancelled = true
+      window.removeEventListener('pixtune:livepix-changed', load)
     }
   }, [])
 

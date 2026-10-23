@@ -5,7 +5,9 @@ import { authMiddleware, getUserId } from '../middleware/auth'
 import {
   processWebhookEvent,
   getLivePixConfig,
+  getLivePixAccount,
   saveLivePixConfig,
+  disconnectLivePix,
   getOrCreateWebhookToken,
   findUserIdByWebhookToken,
   LivePixService,
@@ -439,6 +441,7 @@ donations.get('/config', authMiddleware, async (c) => {
   const userId = getUserId(c)
   const config = await getLivePixConfig(userId)
   const webhookToken = await getOrCreateWebhookToken(userId)
+  const { account, lastVerifiedAt } = await getLivePixAccount(userId)
 
   const configured = !!(config?.clientId && config?.clientSecret)
 
@@ -446,6 +449,13 @@ donations.get('/config', authMiddleware, async (c) => {
     success: true,
     data: {
       configured,
+      // "connected" só é verdadeiro quando as credenciais já foram aceitas
+      // pelo LivePix (conta validada em cache), e não apenas quando existem.
+      connected: configured && Boolean(account),
+      account,
+      lastVerifiedAt,
+      clientId: config?.clientId ?? '',
+      hasSecret: Boolean(config?.clientSecret),
       provider: 'gg',
       webhookUrl: config?.webhookUrl,
       webhookToken,
@@ -527,10 +537,11 @@ donations.post('/simulate', authMiddleware, zValidator('json', simulateSchema), 
   })
 })
 
-// Salvar configuração do LivePix
+// Salvar configuração do LivePix (valida as credenciais antes de gravar)
 const livepixConfigSchema = z.object({
   clientId: z.string().min(1, 'Informe o Client ID'),
-  clientSecret: z.string().min(1, 'Informe o Client Secret'),
+  // Opcional: em branco mantém o secret já salvo (o formulário nunca o recebe de volta).
+  clientSecret: z.string().optional(),
   webhookUrl: z.string().url().optional().or(z.literal('')),
   webhookSecret: z.string().optional(),
 })
@@ -539,23 +550,32 @@ donations.post('/config', authMiddleware, zValidator('json', livepixConfigSchema
   const userId = getUserId(c)
   const body = c.req.valid('json')
 
-  const config = {
-    provider: 'gg' as const,
-    clientId: body.clientId.trim(),
-    clientSecret: body.clientSecret.trim(),
-    webhookUrl: body.webhookUrl || undefined,
-    webhookSecret: body.webhookSecret,
-  }
+  const existing = await getLivePixConfig(userId)
+  const clientSecret = body.clientSecret?.trim() || existing?.clientSecret
 
-  const service = new LivePixService(config, userId)
-  if (!service.isConfigured()) {
+  if (!clientSecret) {
     return c.json(
-      { success: false, error: { code: 'INVALID_CONFIG', message: 'Configuração inválida' } },
+      {
+        success: false,
+        error: {
+          code: 'MISSING_SECRET',
+          message: 'Informe o Client Secret da aplicação LivePix.',
+        },
+      },
       400
     )
   }
 
-  // Valida as credenciais consultando a conta autenticada no LivePix.
+  const config = {
+    provider: 'gg' as const,
+    clientId: body.clientId.trim(),
+    clientSecret,
+    webhookUrl: body.webhookUrl || existing?.webhookUrl,
+    webhookSecret: body.webhookSecret ?? existing?.webhookSecret,
+  }
+
+  // Valida de verdade: emite/usa o token OAuth2 e consulta GET /v2/account.
+  const service = new LivePixService(config, userId)
   const health = await service.checkHealth()
   if (!health.ok) {
     return c.json(
@@ -563,20 +583,106 @@ donations.post('/config', authMiddleware, zValidator('json', livepixConfigSchema
         success: false,
         error: {
           code: 'LIVEPIX_ERROR',
-          message: `Integração LivePix não está pronta: ${health.reason || 'verifique o painel'}`,
+          message: `Não foi possível validar as credenciais no LivePix: ${
+            health.reason || 'verifique os dados'
+          }`,
         },
       },
       422
     )
   }
 
-  await saveLivePixConfig(userId, {
-    ...config,
-    accessToken: health.accessToken,
-    tokenExpiresAt: health.tokenExpiresAt,
-  })
+  await saveLivePixConfig(
+    userId,
+    { ...config, accessToken: health.accessToken, tokenExpiresAt: health.tokenExpiresAt },
+    health.account
+  )
 
-  return c.json({ success: true, data: { configured: true } })
+  const webhookToken = await getOrCreateWebhookToken(userId)
+
+  return c.json({
+    success: true,
+    data: {
+      configured: true,
+      connected: true,
+      account: health.account ?? null,
+      lastVerifiedAt: new Date().toISOString(),
+      webhookToken,
+      webhookPath: `/api/donations/webhook/${webhookToken}`,
+    },
+  })
+})
+
+// Revalida a conexão agora. Usa o token em cache (só emite novo se expirado),
+// respeitando o limite de emissão de tokens do LivePix.
+donations.post('/config/verify', authMiddleware, async (c) => {
+  const userId = getUserId(c)
+  const config = await getLivePixConfig(userId)
+
+  if (!config?.clientId || !config.clientSecret) {
+    return c.json(
+      {
+        success: false,
+        error: { code: 'NOT_CONFIGURED', message: 'Integração LivePix não está configurada.' },
+      },
+      400
+    )
+  }
+
+  const service = new LivePixService(config, userId)
+  const health = await service.checkHealth()
+
+  if (!health.ok) {
+    return c.json(
+      {
+        success: false,
+        error: {
+          code: 'LIVEPIX_ERROR',
+          message: `Falha ao conectar no LivePix: ${
+            health.reason || 'verifique as credenciais'
+          }`,
+        },
+      },
+      422
+    )
+  }
+
+  await saveLivePixConfig(
+    userId,
+    { ...config, accessToken: health.accessToken, tokenExpiresAt: health.tokenExpiresAt },
+    health.account
+  )
+
+  return c.json({
+    success: true,
+    data: {
+      connected: true,
+      account: health.account ?? null,
+      lastVerifiedAt: new Date().toISOString(),
+    },
+  })
+})
+
+// Desconectar de verdade: limpa credenciais e tokens e tenta remover o webhook
+// cadastrado no LivePix (melhor esforço).
+donations.post('/config/disconnect', authMiddleware, async (c) => {
+  const userId = getUserId(c)
+  const result = await disconnectLivePix(userId)
+  const webhookToken = await getOrCreateWebhookToken(userId)
+
+  return c.json({
+    success: true,
+    data: {
+      configured: false,
+      connected: false,
+      account: null,
+      lastVerifiedAt: null,
+      remoteWebhooksRemoved: result.remoteWebhooksRemoved,
+      warning: result.remoteError ?? null,
+      webhookToken,
+      webhookPath: `/api/donations/webhook/${webhookToken}`,
+    },
+  })
 })
 
 export default donations

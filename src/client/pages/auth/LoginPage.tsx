@@ -4,7 +4,6 @@ import { User, Lock, Mail, ArrowRight } from 'lucide-react'
 import { Button } from '@client/components/ui/Button'
 import { Input } from '@client/components/ui/Input'
 import { Card } from '@client/components/ui/Card'
-import { GoogleAuthButton } from '@client/components/auth/GoogleAuthButton'
 import { useAuth } from '@client/contexts/AuthContext'
 
 export function LoginPage() {
@@ -90,10 +89,6 @@ export function LoginPage() {
               Entrar
             </Button>
           </form>
-
-          <div className="mt-4">
-            <GoogleAuthButton />
-          </div>
 
           <div className="mt-6 pt-6 border-t border-pixtune-border text-center">
             <p className="text-body-sm text-pixtune-textSecondary">

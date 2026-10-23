@@ -57,6 +57,13 @@ export interface LivePixConfig {
   webhookSecret?: string
 }
 
+/** Conta autenticada no LivePix (resultado de GET /v2/account). */
+export interface LivePixAccountInfo {
+  id: string
+  username: string
+  displayName?: string
+}
+
 /** Payload "magro" enviado pelo webhook oficial do LivePix. */
 export interface LivePixWebhookPayload {
   userId?: string
@@ -460,6 +467,12 @@ export class LivePixService {
     if (!this.client) throw new Error('LivePix não configurado')
     return this.client.listWebhooks()
   }
+
+  /** Remove um webhook no LivePix. */
+  async deleteWebhook(webhookId: string): Promise<void> {
+    if (!this.client) throw new Error('LivePix não configurado')
+    return this.client.deleteWebhook(webhookId)
+  }
 }
 
 /** Busca a configuração de LivePix de um usuário no banco. */
@@ -486,18 +499,29 @@ export async function getLivePixConfig(userId: string): Promise<LivePixConfig | 
 /** Salva ou atualiza a integração LivePix de um usuário. */
 export async function saveLivePixConfig(
   userId: string,
-  config: LivePixConfig
+  config: LivePixConfig,
+  account?: LivePixAccountInfo | null
 ): Promise<void> {
   const existing = await prisma.integration.findUnique({
     where: { userId_type: { userId, type: 'livepix' } },
   })
-  const meta = {
+
+  // Parte do metadata existente e só sobrescreve o que foi informado, para não
+  // apagar o secret quando o formulário é salvo sem redigitá-lo.
+  const meta: Record<string, unknown> = {
     ...parseMetadata(existing?.metadata),
     provider: 'gg',
-    clientId: config.clientId,
-    clientSecret: config.clientSecret,
-    webhookUrl: config.webhookUrl,
-    webhookSecret: config.webhookSecret,
+  }
+  if (config.clientId !== undefined) meta.clientId = config.clientId
+  if (config.clientSecret) meta.clientSecret = config.clientSecret
+  if (config.webhookUrl !== undefined) meta.webhookUrl = config.webhookUrl
+  if (config.webhookSecret !== undefined) meta.webhookSecret = config.webhookSecret
+
+  if (account) {
+    meta.accountId = account.id
+    meta.accountUsername = account.username
+    meta.accountDisplayName = account.displayName || account.username
+    meta.lastVerifiedAt = new Date().toISOString()
   }
 
   await prisma.integration.upsert({
@@ -520,6 +544,105 @@ export async function saveLivePixConfig(
       metadata: JSON.stringify(meta),
     },
   })
+}
+
+/** Conta LivePix validada por último (cache) e quando isso aconteceu. */
+export async function getLivePixAccount(userId: string): Promise<{
+  account: LivePixAccountInfo | null
+  lastVerifiedAt: string | null
+}> {
+  const integration = await prisma.integration.findUnique({
+    where: { userId_type: { userId, type: 'livepix' } },
+  })
+  const meta = parseMetadata(integration?.metadata)
+
+  const account =
+    typeof meta.accountId === 'string' && typeof meta.accountUsername === 'string'
+      ? {
+          id: meta.accountId,
+          username: meta.accountUsername,
+          displayName:
+            typeof meta.accountDisplayName === 'string' ? meta.accountDisplayName : undefined,
+        }
+      : null
+
+  return {
+    account,
+    lastVerifiedAt: typeof meta.lastVerifiedAt === 'string' ? meta.lastVerifiedAt : null,
+  }
+}
+
+/**
+ * Desconecta a integração de verdade:
+ * 1. tenta remover no LivePix os webhooks que apontam para esta instalação
+ *    (melhor esforço — a API pode estar limitada ou fora do ar);
+ * 2. apaga Client ID, Client Secret, tokens e a conta em cache;
+ * 3. marca a integração como inativa, então o webhook passa a responder 503.
+ *
+ * O token da URL de webhook é mantido: assim, ao reconectar, a mesma URL
+ * volta a funcionar sem precisar cadastrá-la de novo no LivePix.
+ */
+export async function disconnectLivePix(userId: string): Promise<{
+  remoteWebhooksRemoved: number
+  remoteError?: string
+}> {
+  const integration = await prisma.integration.findUnique({
+    where: { userId_type: { userId, type: 'livepix' } },
+  })
+  if (!integration) {
+    return { remoteWebhooksRemoved: 0 }
+  }
+
+  const meta = parseMetadata(integration.metadata)
+  let remoteWebhooksRemoved = 0
+  let remoteError: string | undefined
+
+  const config = await getLivePixConfig(userId)
+  if (config?.clientId && config.clientSecret) {
+    try {
+      const service = new LivePixService(config, userId)
+      const webhooks = await service.listWebhooks()
+      const webhookToken = typeof meta.webhookToken === 'string' ? meta.webhookToken : null
+      const ours = webhooks.filter((hook) =>
+        webhookToken
+          ? hook.url.includes(webhookToken)
+          : hook.url.includes('/api/donations/webhook/')
+      )
+      for (const hook of ours) {
+        try {
+          await service.deleteWebhook(hook.id)
+          remoteWebhooksRemoved += 1
+        } catch (err: any) {
+          remoteError = err?.message || 'Falha ao remover webhook no LivePix'
+        }
+      }
+    } catch (err: any) {
+      remoteError = err?.message || 'Falha ao consultar webhooks no LivePix'
+    }
+  }
+
+  const nextMeta: Record<string, unknown> = { ...meta, provider: 'gg' }
+  delete nextMeta.clientId
+  delete nextMeta.clientSecret
+  delete nextMeta.webhookUrl
+  delete nextMeta.webhookSecret
+  delete nextMeta.accountId
+  delete nextMeta.accountUsername
+  delete nextMeta.accountDisplayName
+  delete nextMeta.lastVerifiedAt
+
+  await prisma.integration.update({
+    where: { userId_type: { userId, type: 'livepix' } },
+    data: {
+      isActive: false,
+      accessToken: null,
+      refreshToken: null,
+      expiresAt: null,
+      metadata: JSON.stringify(nextMeta),
+    },
+  })
+
+  return { remoteWebhooksRemoved, remoteError }
 }
 
 /**

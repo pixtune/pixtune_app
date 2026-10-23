@@ -11,6 +11,40 @@ import { useAccessibility } from '@client/contexts/AccessibilityContext'
 const SETTINGS_SECTIONS = ['general', 'livepix', 'youtube', 'music', 'appearance', 'security'] as const
 type SettingsSection = (typeof SETTINGS_SECTIONS)[number]
 
+/** Avisa o restante da interface (badge do topo) que o status do LivePix mudou. */
+function notifyLivePixChanged() {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event('pixtune:livepix-changed'))
+  }
+}
+
+/** Copia texto com fallback para navegadores/contextos sem Clipboard API. */
+async function copyToClipboard(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+      return true
+    }
+  } catch {
+    // segue para o fallback
+  }
+
+  try {
+    const field = document.createElement('textarea')
+    field.value = text
+    field.setAttribute('readonly', '')
+    field.style.position = 'fixed'
+    field.style.opacity = '0'
+    document.body.appendChild(field)
+    field.select()
+    const copied = document.execCommand('copy')
+    document.body.removeChild(field)
+    return copied
+  } catch {
+    return false
+  }
+}
+
 export function SettingsPage() {
   const [searchParams] = useSearchParams()
   const [section, setSection] = useState<SettingsSection>(() => {
@@ -56,6 +90,11 @@ export function SettingsPage() {
     const res = await apiDonations.config()
     if (res.success && res.data) {
       setLivepixConfig(res.data)
+      // Pré-preenche o Client ID salvo (o secret nunca volta do servidor).
+      setLivepixForm((previous) => ({
+        ...previous,
+        clientId: previous.clientId || res.data?.clientId || '',
+      }))
     }
   }
 
@@ -149,7 +188,14 @@ export function SettingsPage() {
 
         <div className="min-w-0 lg:col-span-9">
           {section === 'general' && <GeneralSettings settings={settings} />}
-          {section === 'livepix' && <LivePixSettings config={livepixConfig} form={livepixForm} setForm={setLivepixForm} />}
+          {section === 'livepix' && (
+            <LivePixSettings
+              config={livepixConfig}
+              form={livepixForm}
+              setForm={setLivepixForm}
+              onReload={loadLivePixConfig}
+            />
+          )}
           {section === 'youtube' && (
             <YouTubeSettings
               status={youtubeStatus}
@@ -209,7 +255,203 @@ function GeneralSettings({ settings }: { settings: any }) {
   )
 }
 
-function LivePixSettings({ config, form, setForm }: { config: any; form: any; setForm: any }) {
+function LivePixSettings({
+  config,
+  form,
+  setForm,
+  onReload,
+}: {
+  config: any
+  form: any
+  setForm: any
+  onReload: () => Promise<void>
+}) {
+  const [busy, setBusy] = useState<'save' | 'verify' | 'disconnect' | null>(null)
+  const [checking, setChecking] = useState(false)
+  const [feedback, setFeedback] = useState<{ kind: 'success' | 'error'; text: string } | null>(null)
+  const [verifyError, setVerifyError] = useState<string | null>(null)
+
+  const configured = Boolean(config?.configured)
+  const connected = Boolean(config?.connected)
+  const hasSecret = Boolean(config?.hasSecret)
+  const account = config?.account as { username?: string; displayName?: string } | null
+
+  // Ao abrir a seção, confirma na API do LivePix se as credenciais salvas
+  // continuam válidas. Usa o token em cache (só emite novo se expirado), então
+  // não consome o limite de emissão de tokens do LivePix.
+  useEffect(() => {
+    if (!configured) return
+    let cancelled = false
+    setChecking(true)
+    apiDonations
+      .verifyConfig()
+      .then(async () => {
+        if (cancelled) return
+        setVerifyError(null)
+        await onReload()
+      })
+      .catch((err: any) => {
+        if (!cancelled) {
+          setVerifyError(err?.message || 'Falha ao verificar a conexão com o LivePix.')
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setChecking(false)
+      })
+    return () => {
+      cancelled = true
+    }
+    // Executa uma vez ao abrir a seção.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const status = checking
+    ? {
+        dot: 'bg-yellow-500',
+        text: 'text-yellow-400',
+        label: 'Verificando conexão...',
+        detail: 'Consultando a API do LivePix.',
+      }
+    : verifyError
+      ? {
+          dot: 'bg-pixtune-danger',
+          text: 'text-pixtune-danger',
+          label: 'Falha na conexão',
+          detail: verifyError,
+        }
+      : !configured
+        ? {
+            dot: 'bg-pixtune-textMuted',
+            text: 'text-pixtune-textSecondary',
+            label: 'Desconectado',
+            detail: 'Informe o Client ID e o Client Secret da sua aplicação LivePix.',
+          }
+        : connected
+          ? {
+              dot: 'bg-pixtune-success',
+              text: 'text-pixtune-success',
+              label: 'Conectado',
+              detail: account?.username
+                ? `Conta LivePix: @${account.username}`
+                : 'Credenciais validadas na API do LivePix.',
+            }
+          : {
+              dot: 'bg-yellow-500',
+              text: 'text-yellow-400',
+              label: 'Configurado, não verificado',
+              detail: 'Clique em “Testar conexão” para confirmar as credenciais.',
+            }
+
+  // Formulário de credenciais e URL de webhook só aparecem quando não há uma
+  // conexão válida. Conectado, a tela mostra apenas status, ações e um atalho
+  // para copiar a URL do webhook.
+  const showCredentialsForm = !configured || Boolean(verifyError) || (!connected && !checking)
+
+  const webhookUrl =
+    typeof window !== 'undefined' && config?.webhookPath
+      ? `${window.location.origin}${config.webhookPath}`
+      : ''
+
+  async function handleSave() {
+    if (!form.clientId.trim()) {
+      setFeedback({ kind: 'error', text: 'Informe o Client ID da aplicação LivePix.' })
+      return
+    }
+    if (!form.clientSecret.trim() && !hasSecret) {
+      setFeedback({ kind: 'error', text: 'Informe o Client Secret da aplicação LivePix.' })
+      return
+    }
+
+    setBusy('save')
+    setFeedback(null)
+    setVerifyError(null)
+    try {
+      const res = await apiDonations.saveConfig({
+        clientId: form.clientId.trim(),
+        // Em branco = mantém o secret já salvo no servidor.
+        clientSecret: form.clientSecret.trim() || undefined,
+      })
+      const username = res.data?.account?.username
+      setForm((previous: any) => ({ ...previous, clientSecret: '' }))
+      await onReload()
+      notifyLivePixChanged()
+      setFeedback({
+        kind: 'success',
+        text: username
+          ? `Configuração salva e validada. Conectado à conta @${username}.`
+          : 'Configuração salva e validada na API do LivePix.',
+      })
+    } catch (err: any) {
+      setFeedback({
+        kind: 'error',
+        text:
+          err?.message ||
+          'Não foi possível salvar: o LivePix recusou as credenciais informadas.',
+      })
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  async function handleVerify() {
+    setBusy('verify')
+    setFeedback(null)
+    setVerifyError(null)
+    try {
+      const res = await apiDonations.verifyConfig()
+      await onReload()
+      setFeedback({
+        kind: 'success',
+        text: res.data?.account?.username
+          ? `Conexão confirmada com a conta @${res.data.account.username}.`
+          : 'Conexão confirmada com a API do LivePix.',
+      })
+    } catch (err: any) {
+      const message = err?.message || 'Falha ao verificar a conexão com o LivePix.'
+      setVerifyError(message)
+      setFeedback({ kind: 'error', text: message })
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  async function handleDisconnect() {
+    const confirmed = window.confirm(
+      'Desconectar o Live Pix? As credenciais e os tokens salvos serão apagados e o webhook desta conta deixará de aceitar doações até você conectar novamente.'
+    )
+    if (!confirmed) return
+
+    setBusy('disconnect')
+    setFeedback(null)
+    setVerifyError(null)
+    try {
+      const res = await apiDonations.disconnectConfig()
+      setForm({ clientId: '', clientSecret: '', webhookUrl: '' })
+      await onReload()
+      notifyLivePixChanged()
+      const removed = res.data?.remoteWebhooksRemoved ?? 0
+      const warning = res.data?.warning
+      setFeedback(
+        warning
+          ? {
+              kind: 'error',
+              text: `Desconectado nesta instalação, mas o webhook no LivePix não pôde ser removido automaticamente (${warning}). Remova-o manualmente no painel do LivePix.`,
+            }
+          : {
+              kind: 'success',
+              text:
+                removed > 0
+                  ? `Desconectado. ${removed} webhook(s) removido(s) no LivePix.`
+                  : 'Desconectado. Credenciais e tokens apagados.',
+            }
+      )
+    } catch (err: any) {
+      setFeedback({ kind: 'error', text: err?.message || 'Não foi possível desconectar.' })
+    } finally {
+      setBusy(null)
+    }
+  }
+
   return (
     <Card className="p-6">
       <div className="flex items-center gap-2 mb-6">
@@ -217,108 +459,152 @@ function LivePixSettings({ config, form, setForm }: { config: any; form: any; se
         <h2 className="text-body font-semibold text-pixtune-text">Integração LivePix</h2>
       </div>
       <div className="space-y-6">
-        <div className="flex items-center justify-between p-4 rounded-lg bg-pixtune-surfaceElevated border border-pixtune-border">
-          <div>
+        <div className="flex items-center justify-between gap-4 p-4 rounded-lg bg-pixtune-surfaceElevated border border-pixtune-border">
+          <div className="min-w-0">
             <h3 className="text-body-sm font-medium text-pixtune-text">Status da conexão</h3>
-            <p className="text-caption text-pixtune-textMuted">Receba notificações de doações via Live Pix</p>
+            <p className="text-caption text-pixtune-textMuted">{status.detail}</p>
+            {config?.lastVerifiedAt && !verifyError && (
+              <p className="mt-1 text-caption text-pixtune-textMuted">
+                Última verificação: {new Date(config.lastVerifiedAt).toLocaleString('pt-BR')}
+              </p>
+            )}
           </div>
-          <div className="flex items-center gap-3">
-            <span className={`w-2 h-2 rounded-full ${config.configured ? 'bg-pixtune-success' : 'bg-pixtune-textMuted'}`} />
-            <span className={`text-body-sm ${config.configured ? 'text-pixtune-success' : 'text-pixtune-textSecondary'}`}>
-              {config.configured ? 'Conectado' : 'Desconectado'}
-            </span>
+          <div className="flex flex-shrink-0 items-center gap-3">
+            <span
+              className={`h-2 w-2 rounded-full ${status.dot} ${checking ? 'animate-pulse' : ''}`}
+              aria-hidden="true"
+            />
+            <span className={`text-body-sm font-medium ${status.text}`}>{status.label}</span>
           </div>
         </div>
 
-        <div className="space-y-4">
-          <div>
-            <label className="text-body-sm font-medium text-pixtune-textSecondary" htmlFor="clientId">
-              Client ID
-            </label>
-            <Input
-              id="clientId"
-              value={form.clientId}
-              onChange={(e) => setForm({ ...form, clientId: e.target.value })}
-              placeholder="Client ID da aplicação LivePix"
-              autoComplete="off"
-            />
+        {feedback && (
+          <div
+            role={feedback.kind === 'error' ? 'alert' : 'status'}
+            className={
+              feedback.kind === 'success'
+                ? 'flex items-start gap-2 rounded-xl border border-pixtune-success/30 bg-pixtune-success/10 p-3 text-body-sm text-pixtune-success'
+                : 'flex items-start gap-2 rounded-xl border border-pixtune-danger/30 bg-pixtune-danger/10 p-3 text-body-sm text-pixtune-danger'
+            }
+          >
+            {feedback.kind === 'success' ? (
+              <CheckCircle2 className="mt-0.5 h-4 w-4 flex-shrink-0" />
+            ) : (
+              <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" />
+            )}
+            <span>{feedback.text}</span>
           </div>
-          <div>
-            <label className="text-body-sm font-medium text-pixtune-textSecondary" htmlFor="clientSecret">
-              Client Secret
-            </label>
-            <Input
-              id="clientSecret"
-              type="password"
-              value={form.clientSecret}
-              onChange={(e) => setForm({ ...form, clientSecret: e.target.value })}
-              placeholder="Client Secret da aplicação LivePix"
-              autoComplete="new-password"
-              helperText="Crie a aplicação em livepix.gg → Configurações → Desenvolvedores. Escopos: account:read, messages:read, payments:read e webhooks."
-            />
-          </div>
-          <p className="text-caption text-pixtune-textMuted">
-            A autenticação usa OAuth2 oficial do LivePix. O Client Secret fica salvo apenas no banco
-            local desta instalação.
-          </p>
-        </div>
+        )}
 
-        <div className="space-y-2">
-          <label className="text-body-sm font-medium text-pixtune-textSecondary">
-            URL de webhook desta conta
-          </label>
-          <div className="flex gap-2">
-            <Input
-              id="streamerWebhook"
-              readOnly
-              value={
-                config.webhookPath
-                  ? `${typeof window !== 'undefined' ? window.location.origin : ''}${config.webhookPath}`
-                  : 'Carregando...'
-              }
-            />
-            <Button
-              type="button"
-              variant="secondary"
-              disabled={!config.webhookPath}
-              onClick={() => {
-                if (!config.webhookPath) return
-                navigator.clipboard?.writeText(`${window.location.origin}${config.webhookPath}`)
-              }}
-            >
-              Copiar
-            </Button>
+        {showCredentialsForm && (
+          <div className="space-y-4">
+            <div>
+              <label className="text-body-sm font-medium text-pixtune-textSecondary" htmlFor="clientId">
+                Client ID
+              </label>
+              <Input
+                id="clientId"
+                value={form.clientId}
+                onChange={(e) => setForm({ ...form, clientId: e.target.value })}
+                placeholder="Client ID da aplicação LivePix"
+                autoComplete="off"
+              />
+            </div>
+            <div>
+              <label className="text-body-sm font-medium text-pixtune-textSecondary" htmlFor="clientSecret">
+                Client Secret
+              </label>
+              <Input
+                id="clientSecret"
+                type="password"
+                value={form.clientSecret}
+                onChange={(e) => setForm({ ...form, clientSecret: e.target.value })}
+                placeholder={
+                  hasSecret ? '•••••••••••••••• (salvo — deixe em branco para manter)' : 'Client Secret da aplicação LivePix'
+                }
+                autoComplete="new-password"
+                helperText="Crie a aplicação em livepix.gg → Configurações → Desenvolvedores. Escopos: account:read, messages:read, payments:read e webhooks."
+              />
+            </div>
+            <p className="text-caption text-pixtune-textMuted">
+              A autenticação usa OAuth2 oficial do LivePix. O Client Secret fica salvo apenas no banco
+              local desta instalação e nunca é exibido de volta pelo servidor.
+            </p>
           </div>
-          <p className="text-caption text-pixtune-textMuted">
-            Cadastre esta URL no painel do Live Pix. Ela contém um token exclusivo da sua conta.
-            Para receber doações reais, a aplicação precisa estar acessível publicamente
-            (ex.: <span className="font-mono">ngrok http 3001</span> em desenvolvimento).
-          </p>
-        </div>
+        )}
+
+        {showCredentialsForm && (
+          <div className="space-y-2">
+            <label className="text-body-sm font-medium text-pixtune-textSecondary">
+              URL de webhook desta conta
+            </label>
+            <div className="flex gap-2">
+              <Input id="streamerWebhook" readOnly value={webhookUrl || 'Carregando...'} />
+              <Button
+                type="button"
+                variant="secondary"
+                disabled={!webhookUrl}
+                onClick={async () => {
+                  const copied = await copyToClipboard(webhookUrl)
+                  setFeedback(
+                    copied
+                      ? { kind: 'success', text: 'URL do webhook copiada.' }
+                      : { kind: 'error', text: 'Selecione a URL ao lado e copie manualmente.' }
+                  )
+                }}
+              >
+                Copiar
+              </Button>
+            </div>
+            <p className="text-caption text-pixtune-textMuted">
+              Cadastre esta URL no painel do Live Pix. Ela contém um token exclusivo da sua conta.
+              Para receber doações reais, a aplicação precisa estar acessível publicamente
+              (ex.: <span className="font-mono">ngrok http 3001</span> em desenvolvimento).
+            </p>
+          </div>
+        )}
 
         <div className="p-4 rounded-lg bg-pixtune-surfaceElevated/50 border border-pixtune-border">
           <h4 className="text-caption font-medium text-pixtune-textSecondary mb-2">Sobre o LivePix</h4>
           <p className="text-body-sm text-pixtune-textSecondary">
             O PixTune usa a API oficial do LivePix (livepix.gg). O webhook do LivePix envia apenas
             o identificador do evento; os detalhes da mensagem são consultados na API com as
-            credenciais acima. Nenhuma senha bancária ou credencial financeira do doador é
+            credenciais salvas. Nenhuma senha bancária ou credencial financeira do doador é
             armazenada.
           </p>
         </div>
 
-        <Button
-          variant="outline"
-          onClick={async () => {
-            const res = await apiDonations.saveConfig(form)
-            if (res.success) {
-              alert('Configuração salva com sucesso!')
-            } else {
-              alert('Erro ao salvar: ' + res.error?.message)
-            }
-          }}
-        >
-          Salvar configuração Live Pix
-        </Button>
+        <div className="flex flex-wrap items-center gap-3">
+          {showCredentialsForm && (
+            <Button variant="primary" onClick={handleSave} disabled={busy !== null} isLoading={busy === 'save'}>
+              Salvar configuração
+            </Button>
+          )}
+          <Button
+            variant="secondary"
+            onClick={handleVerify}
+            disabled={busy !== null || !configured}
+            isLoading={busy === 'verify'}
+          >
+            <RefreshCw className="h-4 w-4" /> Testar conexão
+          </Button>
+          <Button
+            variant="ghost"
+            onClick={handleDisconnect}
+            disabled={busy !== null || !configured}
+            isLoading={busy === 'disconnect'}
+            className="text-pixtune-danger hover:bg-pixtune-danger/10 hover:text-pixtune-danger"
+          >
+            <Unplug className="h-4 w-4" /> Desconectar
+          </Button>
+        </div>
+
+        {!showCredentialsForm && (
+          <p className="text-caption text-pixtune-textMuted">
+            Conectado: o formulário e a URL de webhook ficam ocultos. Para trocar as credenciais,
+            clique em <strong>Desconectar</strong>.
+          </p>
+        )}
       </div>
     </Card>
   )
@@ -715,9 +1001,8 @@ function YouTubeSettings({
                   <strong>OAuth Client ID</strong> do tipo “Aplicativo da Web” no Google Cloud Console
                   e preencha <span className="font-mono">YOUTUBE_CLIENT_ID</span> e{' '}
                   <span className="font-mono">YOUTUBE_CLIENT_SECRET</span> no{' '}
-                  <span className="font-mono">.env</span>, depois reinicie a API. O login no PixTune é
-                  feito pelo Firebase Authentication (veja o README) — este OAuth serve só para ler o
-                  canal do YouTube.
+                  <span className="font-mono">.env</span>, depois reinicie a API. O login no PixTune
+                  usa e-mail e senha — este OAuth serve só para ler o canal do YouTube.
                 </p>
                 <p>URI de redirecionamento autorizado que deve ser cadastrada:</p>
                 <ul className="space-y-1">

@@ -77,15 +77,6 @@ export const apiAuth = {
 
   me: () => request<{ user: { id: string; email: string; name?: string; avatarUrl?: string } }>('/api/auth/me'),
 
-  firebaseStatus: () => request<{ configured: boolean }>('/api/auth/firebase/status'),
-
-  /** Troca o ID token do Firebase (login Google) por uma sessão PixTune. */
-  firebaseLogin: (idToken: string) =>
-    request<{ user: { id: string; email: string; name?: string; avatarUrl?: string }; token: string }>(
-      '/api/auth/firebase',
-      { method: 'POST', body: JSON.stringify({ idToken }) }
-    ),
-
   logout: () => request('/api/auth/logout', { method: 'POST' }),
 }
 
@@ -123,21 +114,60 @@ export interface DonationEvent {
 
 export interface LivePixConfig {
   clientId: string
-  clientSecret: string
+  /** Em branco mantém o secret já salvo (o servidor nunca o devolve). */
+  clientSecret?: string
   webhookUrl?: string
   webhookSecret?: string
+}
+
+export interface LivePixAccount {
+  id: string
+  username: string
+  displayName?: string
+}
+
+export interface LivePixConfigStatus {
+  configured: boolean
+  connected: boolean
+  account: LivePixAccount | null
+  lastVerifiedAt: string | null
+  clientId: string
+  hasSecret: boolean
+  provider?: string
+  webhookUrl?: string
+  webhookToken?: string
+  webhookPath?: string
+}
+
+export interface LivePixActionResult {
+  configured: boolean
+  connected: boolean
+  account: LivePixAccount | null
+  lastVerifiedAt: string | null
+  webhookToken?: string
+  webhookPath?: string
+  remoteWebhooksRemoved?: number
+  warning?: string | null
 }
 
 export const apiDonations = {
   list: () => request<{ events: DonationEvent[]; total: number }>('/api/donations'),
 
-  config: () => request<{ configured: boolean; provider?: string; webhookUrl?: string; webhookToken?: string; webhookPath?: string }>('/api/donations/config'),
+  config: () => request<LivePixConfigStatus>('/api/donations/config'),
 
   saveConfig: (config: LivePixConfig) =>
-    request('/api/donations/config', {
+    request<LivePixActionResult>('/api/donations/config', {
       method: 'POST',
       body: JSON.stringify(config),
     }),
+
+  /** Revalida as credenciais agora, consultando a API do LivePix. */
+  verifyConfig: () =>
+    request<LivePixActionResult>('/api/donations/config/verify', { method: 'POST' }),
+
+  /** Apaga credenciais/tokens e tenta remover o webhook no LivePix. */
+  disconnectConfig: () =>
+    request<LivePixActionResult>('/api/donations/config/disconnect', { method: 'POST' }),
 }
 
 // ============================================================

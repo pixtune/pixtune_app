@@ -62,7 +62,7 @@ export function DashboardPage() {
   async function checkLivePixStatus() {
     const res = await apiDonations.config()
     if (res.success && res.data) {
-      setLivepixStatus(res.data.configured ? 'connected' : 'disconnected')
+      setLivepixStatus(res.data.connected ? 'connected' : 'disconnected')
     }
   }
 

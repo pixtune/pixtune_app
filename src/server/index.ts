@@ -12,8 +12,8 @@ import youtubeRoutes from './routes/youtube'
 
 const app = new Hono()
 
-// Origens permitidas: por padrão o dev local. Em produção (ex.: Firebase
-// Hosting) defina CORS_ORIGINS com as URLs separadas por vírgula.
+// Origens permitidas: por padrão o dev local. Em produção defina CORS_ORIGINS
+// com as URLs separadas por vírgula.
 const corsOrigins = (process.env.CORS_ORIGINS || 'http://localhost:3000,http://127.0.0.1:3000')
   .split(',')
   .map((origin) => origin.trim())

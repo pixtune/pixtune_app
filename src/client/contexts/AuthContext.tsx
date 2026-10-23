@@ -1,8 +1,6 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { getRedirectResult } from 'firebase/auth'
 import { apiAuth } from '@client/api/client'
-import { getFirebaseAuth } from '@client/lib/firebase'
 
 interface User {
   id: string
@@ -18,7 +16,6 @@ interface AuthContextType {
   authError: string | null
   login: (email: string, password: string) => Promise<void>
   register: (email: string, password: string, name: string) => Promise<void>
-  firebaseLogin: (idToken: string) => Promise<void>
   logout: () => Promise<void>
   updateUser: (updates: Partial<User>) => void
 }
@@ -31,31 +28,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [authError, setAuthError] = useState<string | null>(null)
   const navigate = useNavigate()
 
-  // Verificar sessão existente ao montar (e concluir login por redirecionamento).
+  // Verificar sessão existente ao montar.
   useEffect(() => {
     let cancelled = false
 
     const initAuth = async () => {
       try {
-        // Conclui um login por redirecionamento do Firebase (fallback do popup).
-        const firebaseAuth = getFirebaseAuth()
-        if (firebaseAuth) {
-          try {
-            const redirectResult = await getRedirectResult(firebaseAuth)
-            if (redirectResult?.user) {
-              const idToken = await redirectResult.user.getIdToken()
-              const res = await apiAuth.firebaseLogin(idToken)
-              if (!cancelled && res.success && res.data) {
-                localStorage.setItem('pixtune_token', res.data.token)
-                setUser(res.data.user)
-                return
-              }
-            }
-          } catch {
-            // Sem redirecionamento pendente: segue para a checagem do token.
-          }
-        }
-
         const token = localStorage.getItem('pixtune_token')
         if (token) {
           try {
@@ -130,27 +108,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [navigate])
 
-  // Login com Google: recebe o ID token do Firebase e troca por sessão PixTune.
-  const firebaseLogin = useCallback(async (idToken: string) => {
-    setIsLoading(true)
-    setAuthError(null)
-    try {
-      const res = await apiAuth.firebaseLogin(idToken)
-      if (res.success && res.data) {
-        localStorage.setItem('pixtune_token', res.data.token)
-        setUser(res.data.user)
-        navigate('/dashboard', { replace: true })
-      } else {
-        throw new Error(res.error?.message || 'Não foi possível entrar com o Google')
-      }
-    } catch (err: any) {
-      setAuthError(err.message || 'Erro ao entrar com o Google')
-      throw err
-    } finally {
-      setIsLoading(false)
-    }
-  }, [navigate])
-
   const logout = useCallback(async () => {
     try {
       await apiAuth.logout()
@@ -175,7 +132,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       authError,
       login,
       register,
-      firebaseLogin,
       logout,
       updateUser,
     }}>
