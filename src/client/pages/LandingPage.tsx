@@ -12,16 +12,14 @@ export function LandingPage() {
         <div className="max-w-7xl mx-auto">
           <div className="grid grid-cols-1 gap-12 lg:grid-cols-2 lg:items-center">
             <div className="space-y-6">
-              <div className="flex w-fit items-center gap-2 rounded-full border border-pixtune-cyan/25 bg-pixtune-cyan/10 px-3 py-1">
-                <Badge variant="info">A trilha sonora da sua live</Badge>
-              </div>
-              <h1 className="text-display-md font-bold text-pixtune-text leading-tight">
+              <Badge variant="info">A trilha sonora da sua live</Badge>
+              <h1 className="text-display-sm font-bold text-pixtune-text leading-tight md:text-display-md">
                 Doe, escreva o nome da música e ela toca na sua <span className="gradient-text">live</span>
               </h1>
               <p className="text-body-lg text-pixtune-textSecondary leading-relaxed">
                 O doador escreve o nome da música na mensagem do Live Pix. O PixTune detecta o
-                pedido, busca o vídeo e coloca na fila. Mensagens que não são pedidos de música
-                são ignoradas — <span className="text-pixtune-text">sem URLs fixas e sem trabalho manual.</span>
+                pedido, busca a faixa no Spotify e coloca na fila. Mensagens que não são pedidos de
+                música são ignoradas — <span className="text-pixtune-text">sem URLs fixas e sem trabalho manual.</span>
               </p>
               <div className="flex flex-col sm:flex-row gap-4">
                 <Link to="/login">
@@ -99,7 +97,7 @@ export function LandingPage() {
       <section id="funcionalidades" className="py-20 border-y border-pixtune-border bg-pixtune-surface/30">
         <div className="max-w-7xl mx-auto px-6 md:px-12">
           <div className="text-center mb-16">
-            <h2 className="text-heading-lg font-bold text-pixtune-text mb-4">Tudo o que um streamer precisa</h2>
+            <h2 className="text-heading-md font-bold text-pixtune-text mb-4 md:text-heading-lg">Tudo o que um streamer precisa</h2>
             <p className="text-body text-pixtune-textSecondary max-w-2xl mx-auto">
               Uma ponte simples entre a mensagem da doação e a música que toca ao vivo.
             </p>
@@ -114,7 +112,7 @@ export function LandingPage() {
             <FeatureCard
               icon={Layers}
               title="Fila Inteligente"
-              description="Ouça apenas o áudio do YouTube, sem exibir o vídeo. Gerencie a ordem, pule faixas, pause e retome a reprodução."
+              description="Reproduza playlists e faixas do Spotify no navegador, com controle de volume, pausa e avanço. A conta do streamer precisa de Premium."
             />
             <FeatureCard
               icon={ShieldCheck}
@@ -144,16 +142,16 @@ export function LandingPage() {
       <section id="como-funciona" className="py-20 bg-pixtune-bg">
         <div className="max-w-7xl mx-auto px-6 md:px-12">
           <div className="text-center mb-16">
-            <h2 className="text-heading-lg font-bold text-pixtune-text mb-4">Como funciona</h2>
+            <h2 className="text-heading-md font-bold text-pixtune-text mb-4 md:text-heading-lg">Como funciona</h2>
             <p className="text-body text-pixtune-textSecondary max-w-2xl mx-auto">
               Três passos para colocar o PixTune na sua transmissão.
             </p>
           </div>
 
           <div className="grid grid-cols-1 gap-8 md:grid-cols-3">
-            <StepCard number="1" title="Conecte sua conta" description="Crie sua conta e configure a integração com o Live Pix para receber doações reais." />
+            <StepCard number="1" title="Conecte suas contas" description="Crie sua conta, conecte o Spotify Premium e configure o Live Pix para receber doações reais." />
             <StepCard number="2" title="Defina o valor mínimo" description="Escolha o valor mínimo inicial. A maior doação sempre toca primeiro; não há ação manual nem palavras-chave." />
-            <StepCard number="3" title="Receba o pedido" description="O doador escreve o nome da música na mensagem. O PixTune detecta, busca no YouTube e toca — ou ignora se não for música." />
+            <StepCard number="3" title="Receba o pedido" description="O doador escreve o nome da música na mensagem. O PixTune detecta, busca no Spotify e toca — ou ignora se não for música." />
           </div>
         </div>
       </section>
@@ -162,7 +160,7 @@ export function LandingPage() {
       <section id="comecar" className="py-20">
         <div className="max-w-3xl mx-auto px-6 md:px-12 text-center">
           <div className="bg-pixtune-surface border border-pixtune-border rounded-2xl p-8 md:p-12 shadow-pixtune">
-            <h2 className="text-heading-lg font-bold text-pixtune-text mb-4">Pronto para começar?</h2>
+            <h2 className="text-heading-md font-bold text-pixtune-text mb-4 md:text-heading-lg">Pronto para começar?</h2>
             <p className="text-body text-pixtune-textSecondary mb-8 max-w-lg mx-auto">
               Comece gratuitamente, sem cartão de crédito. Crie sua conta, configure o valor mínimo e conecte o Live Pix quando estiver pronto.
             </p>
@@ -174,7 +172,7 @@ export function LandingPage() {
               </Link>
             </div>
             <p className="mt-6 text-caption text-pixtune-textMuted">
-              PixTune não é um processador de pagamentos e não substitui o Live Pix. Toda integração respeita a documentação oficial dos serviços envolvidos.
+              PixTune não é um processador de pagamentos e não substitui o Live Pix.
             </p>
           </div>
         </div>
@@ -185,11 +183,11 @@ export function LandingPage() {
 
 function FeatureCard({ icon: Icon, title, description }: { icon: React.ComponentProps<typeof Music> extends never ? never : React.ElementType; title: string; description: string }) {
   return (
-    <Card className="hover:border-pixtune-primary/30 transition-colors group">
+    <Card className="group h-full p-6 transition-colors hover:border-pixtune-primary/30">
       <div className="w-10 h-10 rounded-lg bg-pixtune-primary/10 text-pixtune-primary flex items-center justify-center mb-4 transition-colors group-hover:bg-pixtune-primary group-hover:text-pixtune-black">
         <Icon className="w-5 h-5" />
       </div>
-      <h3 className="text-body font-semibold text-pixtune-text mb-2">{title}</h3>
+      <h3 className="text-heading-sm font-semibold text-pixtune-text mb-2">{title}</h3>
       <p className="text-body-sm text-pixtune-textSecondary leading-relaxed">{description}</p>
     </Card>
   )
@@ -201,7 +199,7 @@ function StepCard({ number, title, description }: { number: string; title: strin
       <div className="w-12 h-12 rounded-full gradient-brand text-pixtune-black flex items-center justify-center font-display font-bold text-body-lg mb-4 shadow-glow-green">
         {number}
       </div>
-      <h3 className="text-body font-semibold text-pixtune-text mb-2">{title}</h3>
+      <h3 className="text-heading-sm font-semibold text-pixtune-text mb-2">{title}</h3>
       <p className="text-body-sm text-pixtune-textSecondary leading-relaxed max-w-xs">{description}</p>
     </div>
   )

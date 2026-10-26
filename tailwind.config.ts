@@ -44,6 +44,8 @@ const config: Config = {
         'display-lg': ['4rem', { lineHeight: '1.08', letterSpacing: '-0.03em' }],
         'display-md': ['3.5rem', { lineHeight: '1.1', letterSpacing: '-0.025em' }],
         'display-sm': ['2.75rem', { lineHeight: '1.15', letterSpacing: '-0.02em' }],
+        // H1 de página no painel: 36px no celular, 44px no desktop (Brandbook §5.2).
+        'page-title': ['2.75rem', { lineHeight: '1.15', letterSpacing: '-0.02em' }],
         'heading-lg': ['2.25rem', { lineHeight: '1.25', letterSpacing: '-0.02em' }],
         'heading-md': ['1.75rem', { lineHeight: '1.3', letterSpacing: '-0.01em' }],
         'heading-sm': ['1.375rem', { lineHeight: '1.35' }],

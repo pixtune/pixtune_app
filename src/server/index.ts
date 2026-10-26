@@ -8,7 +8,7 @@ import queueRoutes from './routes/queue'
 import musicRoutes from './routes/music'
 import settingsRoutes from './routes/settings'
 import rulesRoutes from './routes/rules'
-import youtubeRoutes from './routes/youtube'
+import spotifyRoutes from './routes/spotify'
 
 const app = new Hono()
 
@@ -39,7 +39,7 @@ app.route('/api/queue', queueRoutes)
 app.route('/api/music', musicRoutes)
 app.route('/api/settings', settingsRoutes)
 app.route('/api/rules', rulesRoutes)
-app.route('/api/youtube', youtubeRoutes)
+app.route('/api/spotify', spotifyRoutes)
 
 export { app }
 export type AppType = typeof app

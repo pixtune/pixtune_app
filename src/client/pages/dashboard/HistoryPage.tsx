@@ -48,7 +48,7 @@ export function HistoryPage() {
 
   const statusConfig: Record<string, { label: string; color: string; icon: React.ReactNode }> = {
     received: { label: 'Recebido', color: 'bg-pixtune-textMuted', icon: <Clock className="w-3 h-3" /> },
-    validated: { label: 'Validado', color: 'bg-pixtune-warning', icon: <Zap className="w-3 h-3" /> },
+    validated: { label: 'Validação antiga', color: 'bg-pixtune-warning', icon: <Zap className="w-3 h-3" /> },
     ignored: { label: 'Ignorada', color: 'bg-pixtune-textMuted', icon: <AlertCircle className="w-3 h-3" /> },
     processed: { label: 'Processado', color: 'bg-pixtune-success', icon: <CheckCircle2 className="w-3 h-3" /> },
     failed: { label: 'Falhou', color: 'bg-pixtune-danger', icon: <AlertCircle className="w-3 h-3" /> },
@@ -56,17 +56,14 @@ export function HistoryPage() {
   }
 
   function eventLabel(event: DonationEvent): string {
-    if (event.status === 'validated') {
-      return event.queueItem ? 'Aguardando link' : 'Validado'
-    }
     return statusConfig[event.status]?.label || event.status
   }
 
   function resultBadge(event: DonationEvent) {
     if (event.queueItem) {
-      return event.queueItem.providerId
+      return event.queueItem.provider === 'spotify' && event.queueItem.providerId
         ? { variant: 'success' as const, label: 'Música na fila' }
-        : { variant: 'warning' as const, label: 'Aguardando link' }
+        : { variant: 'warning' as const, label: 'Item legado' }
     }
     if (event.matchedRuleId) {
       return { variant: 'success' as const, label: 'Regra/comando aplicado' }
@@ -92,7 +89,7 @@ export function HistoryPage() {
     <div className="space-y-8">
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
         <div>
-          <h1 className="text-heading-lg font-bold text-pixtune-text">Histórico de Doações</h1>
+          <h1 className="text-heading-lg font-bold text-pixtune-text md:text-page-title">Histórico de Doações</h1>
           <p className="text-body-sm text-pixtune-textSecondary">
             Veja a música detectada em cada mensagem e o resultado do processamento.
           </p>
@@ -114,7 +111,7 @@ export function HistoryPage() {
           >
             <option value="all">Todos os status</option>
             <option value="processed">Processado</option>
-            <option value="validated">Aguardando link</option>
+            <option value="validated">Validação antiga</option>
             <option value="ignored">Ignorada</option>
             <option value="received">Recebido</option>
             <option value="failed">Falhou</option>
@@ -149,7 +146,7 @@ export function HistoryPage() {
                         <span className={`w-2 h-2 rounded-full ${config.color}`} aria-label={eventLabel(event)} />
                         <span className="text-caption font-medium text-pixtune-textMuted">{eventLabel(event)}</span>
                         {!event.isDemo && (
-                          <Badge variant="warning" className="ml-2 text-[10px]">REAL</Badge>
+                          <Badge variant="warning" className="ml-2">REAL</Badge>
                         )}
                       </div>
                       <p className="text-body-sm font-medium text-pixtune-text truncate">{event.donorName}</p>
@@ -166,17 +163,19 @@ export function HistoryPage() {
                           {event.queueItem.title}
                           {event.queueItem.artist ? ` — ${event.queueItem.artist}` : ''}
                         </span>
-                        {event.queueItem.sourceUrl && (
-                          <a
-                            href={event.queueItem.sourceUrl}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="inline-flex items-center gap-1 text-pixtune-primary hover:text-pixtune-primaryHover flex-shrink-0"
-                          >
-                            {event.queueItem.providerId ? 'YouTube' : 'Buscar'}
-                            <ExternalLink className="w-3 h-3" />
-                          </a>
-                        )}
+                        {event.queueItem.provider === 'spotify' &&
+                          event.queueItem.providerId &&
+                          event.queueItem.sourceUrl && (
+                            <a
+                              href={event.queueItem.sourceUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex items-center gap-1 text-pixtune-primary hover:text-pixtune-primaryHover flex-shrink-0"
+                            >
+                              Spotify
+                              <ExternalLink className="w-3 h-3" />
+                            </a>
+                          )}
                       </div>
                     )}
 
@@ -207,7 +206,7 @@ export function HistoryPage() {
                     </div>
                   </div>
                   <div className="flex items-center gap-3">
-                    <Badge variant={badge.variant} className="text-[10px]">
+                    <Badge variant={badge.variant}>
                       {badge.label}
                     </Badge>
                   </div>

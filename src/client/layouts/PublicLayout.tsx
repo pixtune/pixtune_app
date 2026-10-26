@@ -67,7 +67,7 @@ export function PublicLayout() {
           </div>
           <div className="mt-8 pt-8 border-t border-pixtune-border">
             <p className="text-pixtune-textMuted text-caption">
-              © 2026 PixTune. Não afiliado ao Spotify, YouTube ou Live Pix.
+              © 2026 PixTune. Não afiliado ao Spotify ou ao Live Pix.
             </p>
           </div>
         </div>

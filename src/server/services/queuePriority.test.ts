@@ -95,7 +95,7 @@ describe('decidePriorityAction', () => {
     ).toBe('queue')
   })
 
-  it('nunca antecipa pedido sem vídeo do YouTube', () => {
+  it('nunca antecipa pedido sem faixa do Spotify', () => {
     expect(
       decidePriorityAction({
         hasCurrent: true,

@@ -8,13 +8,14 @@ import {
   saveSongRequestSettings,
   type SongRequestAction,
 } from '../services/songRequestSettings'
+import { isSpotifyConfigured } from '../services/spotify'
 
 const settings = new Hono()
 
 function responsePayload(userSettings: any, songRequest: { enabled: boolean; minAmountCents: number; action: SongRequestAction }) {
   return {
     livepixConnected: userSettings?.livepixConnected ?? false,
-    musicProvider: userSettings?.musicProvider ?? 'youtube',
+    musicProvider: userSettings?.musicProvider ?? 'spotify',
     musicConnected: userSettings?.musicConnected ?? false,
     autoPlay: userSettings?.autoPlay ?? true,
     defaultVolume: userSettings?.defaultVolume ?? 70,
@@ -26,7 +27,7 @@ function responsePayload(userSettings: any, songRequest: { enabled: boolean; min
     songRequestEnabled: songRequest.enabled,
     songRequestMinAmount: songRequest.minAmountCents,
     songRequestAction: songRequest.action,
-    youtubeSearchConfigured: Boolean(process.env.YOUTUBE_API_KEY?.trim()),
+    spotifyConfigured: isSpotifyConfigured(),
   }
 }
 

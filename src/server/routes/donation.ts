@@ -14,14 +14,16 @@ import {
 } from '../services/livepix'
 import prisma from '../lib/prisma'
 import {
-  detectSongRequest,
-  songRequestReasonMessage,
-  youTubeSearchUrl,
-  type DetectedSong,
-} from '../services/songRequest'
+  detectSpotifySongRequest,
+  spotifySongRequestReasonMessage,
+  type DetectedSpotifySong,
+  type SpotifySongRequestReason,
+} from '../services/spotifySongRequest'
+import { parseSongRequest } from '../services/songRequest'
 import { getSongRequestSettings } from '../services/songRequestSettings'
 import { maybeStartItem } from '../services/queuePriority'
-import { youTubeThumbnailUrl, youTubeWatchUrl } from '../../shared/youtube'
+import { getSpotifyAccessToken, SpotifyError } from '../services/spotify'
+import { findSpotifyTrackIdInText, spotifyTrackUrl } from '../../shared/spotify'
 
 const donations = new Hono()
 
@@ -161,7 +163,7 @@ async function handleWebhook(token: string, payload: z.infer<typeof webhookSchem
           matchedRuleAction: finalEvent?.matchedRule?.action ?? null,
           songTitle: finalEvent?.queueItem?.title ?? null,
           songArtist: finalEvent?.queueItem?.artist ?? null,
-          detectedVideoId: finalEvent?.queueItem?.providerId ?? null,
+          spotifyTrackId: finalEvent?.queueItem?.providerId ?? null,
           queueItemStatus: finalEvent?.queueItem?.status ?? null,
           detectionNote: finalEvent?.errorMessage ?? null,
         },
@@ -225,7 +227,7 @@ async function markEvent(
 interface EnqueueSongInput {
   userId: string
   donationEventId: string
-  song: DetectedSong
+  song: DetectedSpotifySong
 }
 
 /**
@@ -241,12 +243,7 @@ async function enqueueSong({ userId, donationEventId, song }: EnqueueSongInput) 
     select: { position: true },
   })
 
-  const sourceUrl =
-    song.sourceUrl ||
-    (song.videoId ? youTubeWatchUrl(song.videoId) : youTubeSearchUrl(song.title, song.artist))
-
-  const artworkUrl =
-    song.artworkUrl || (song.videoId ? youTubeThumbnailUrl(song.videoId) : undefined)
+  const sourceUrl = song.sourceUrl || spotifyTrackUrl(song.providerId)
 
   const created = await prisma.queueItem.create({
     data: {
@@ -254,11 +251,11 @@ async function enqueueSong({ userId, donationEventId, song }: EnqueueSongInput) 
       title: song.title,
       artist: song.artist,
       album: song.album,
-      artworkUrl,
+      artworkUrl: song.artworkUrl,
       durationMs: song.durationMs,
       sourceUrl,
-      provider: 'youtube',
-      providerId: song.videoId ?? null,
+      provider: 'spotify',
+      providerId: song.providerId,
       position: (last?.position ?? -1) + 1,
       addedBy: 'donation',
       donationEventId,
@@ -300,7 +297,7 @@ async function applyDonationRules(
   const settings = await getSongRequestSettings(userId)
 
   if (!message) {
-    await markEvent(donationEventId, 'ignored', songRequestReasonMessage('EMPTY_MESSAGE'))
+    await markEvent(donationEventId, 'ignored', spotifySongRequestReasonMessage('EMPTY_MESSAGE'))
     return
   }
 
@@ -313,11 +310,44 @@ async function applyDonationRules(
     return
   }
 
+  // Mensagens que claramente não são pedidos (ou que usam link do YouTube)
+  // devem ser ignoradas mesmo quando o Spotify ainda não foi conectado.
+  // Um link do Spotify tem prioridade sobre a heurística de texto.
+  if (!findSpotifyTrackIdInText(message)) {
+    const parsed = parseSongRequest(message)
+    if (parsed.reason) {
+      await markEvent(
+        donationEventId,
+        'ignored',
+        spotifySongRequestReasonMessage(parsed.reason as SpotifySongRequestReason)
+      )
+      return
+    }
+    if (parsed.kind === 'youtube') {
+      await markEvent(
+        donationEventId,
+        'ignored',
+        spotifySongRequestReasonMessage('YOUTUBE_LINK_NOT_SUPPORTED')
+      )
+      return
+    }
+  }
+
+  let accessToken: string
+  try {
+    accessToken = await getSpotifyAccessToken(userId)
+  } catch (err) {
+    const message =
+      err instanceof SpotifyError && err.code === 'NOT_CONNECTED'
+        ? spotifySongRequestReasonMessage('SPOTIFY_NOT_CONNECTED')
+        : 'Não foi possível falar com o Spotify agora. Tente novamente.'
+    await markEvent(donationEventId, 'failed', message)
+    return
+  }
+
   let detection
   try {
-    detection = await detectSongRequest(message, {
-      youtubeApiKey: process.env.YOUTUBE_API_KEY,
-    })
+    detection = await detectSpotifySongRequest(message, { accessToken })
   } catch (err) {
     await markEvent(
       donationEventId,
@@ -333,7 +363,7 @@ async function applyDonationRules(
     await markEvent(
       donationEventId,
       'ignored',
-      songRequestReasonMessage(detection.reason)
+      spotifySongRequestReasonMessage(detection.reason)
     )
     return
   }
@@ -342,7 +372,7 @@ async function applyDonationRules(
     await markEvent(
       donationEventId,
       'failed',
-      songRequestReasonMessage(detection.reason)
+      spotifySongRequestReasonMessage(detection.reason)
     )
     return
   }
@@ -365,17 +395,7 @@ async function applyDonationRules(
       song: detection.song,
     })
 
-    if (detection.status === 'needs_video') {
-      // A música foi identificada, mas ainda falta um vídeo do YouTube.
-      // O pedido fica na fila aguardando o streamer anexar o link.
-      await markEvent(
-        donationEventId,
-        'validated',
-        songRequestReasonMessage(detection.reason)
-      )
-    } else {
-      await markEvent(donationEventId, 'processed', null)
-    }
+    await markEvent(donationEventId, 'processed', null)
   } catch (err) {
     await markEvent(
       donationEventId,
@@ -402,6 +422,7 @@ donations.get('/', authMiddleware, async (c) => {
           id: true,
           title: true,
           artist: true,
+          provider: true,
           providerId: true,
           sourceUrl: true,
           artworkUrl: true,
@@ -530,7 +551,7 @@ donations.post('/simulate', authMiddleware, zValidator('json', simulateSchema), 
       matchedRuleAction: finalEvent?.matchedRule?.action ?? null,
       songTitle: finalEvent?.queueItem?.title ?? null,
       songArtist: finalEvent?.queueItem?.artist ?? null,
-      detectedVideoId: finalEvent?.queueItem?.providerId ?? null,
+      spotifyTrackId: finalEvent?.queueItem?.providerId ?? null,
       queueItemStatus: finalEvent?.queueItem?.status ?? null,
       detectionNote: finalEvent?.errorMessage ?? null,
     },

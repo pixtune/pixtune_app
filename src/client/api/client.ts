@@ -36,6 +36,8 @@ async function request<T = unknown>(
   }
 
   const res = await fetch(url, {
+    // Necessário para o cookie HttpOnly do OAuth do Spotify entre a web e a API.
+    credentials: 'include',
     ...options,
     headers,
   })
@@ -88,6 +90,7 @@ export interface DonationQueueItem {
   id: string
   title: string
   artist?: string
+  provider: string
   providerId?: string
   sourceUrl?: string
   artworkUrl?: string
@@ -185,7 +188,7 @@ export interface QueueItem {
   provider: string
   providerId?: string
   position: number
-  addedBy: 'streamer' | 'donation' | 'demo'
+  addedBy: 'streamer' | 'donation' | 'demo' | 'playlist'
   donationEventId?: string
   /** Valor da doação que define a prioridade. Itens manuais valem 0. */
   amountCents: number
@@ -267,24 +270,10 @@ export interface PlaybackStatus {
   pendingCount: number
 }
 
-export interface ResolvedYouTubeTrack {
-  videoId: string
-  title: string
-  artist: string
-  artworkUrl: string
-  sourceUrl: string
-}
-
 export const apiMusic = {
   catalog: () => request<{ tracks: MusicTrack[]; total: number }>('/api/music/catalog'),
 
   status: () => request<PlaybackStatus>('/api/music/status'),
-
-  resolve: (url: string) =>
-    request<ResolvedYouTubeTrack>('/api/music/resolve', {
-      method: 'POST',
-      body: JSON.stringify({ url }),
-    }),
 
   play: (data?: { trackId?: string }) =>
     request<{ isPlaying: boolean; track?: MusicTrack | null; reason?: string }>('/api/music/play', {
@@ -385,7 +374,7 @@ export interface UserSettings {
   songRequestEnabled: boolean
   songRequestMinAmount: number
   songRequestAction: 'add_to_queue' | 'play_next' | 'ignore'
-  youtubeSearchConfigured: boolean
+  spotifyConfigured: boolean
 }
 
 export const apiSettings = {
@@ -399,36 +388,87 @@ export const apiSettings = {
 }
 
 // ============================================================
-// YouTube (OAuth)
+// Spotify (OAuth + Web Playback SDK)
 // ============================================================
 
-export interface YouTubeChannelInfo {
+export interface SpotifyProfile {
   id: string
-  title: string
-  description?: string
-  customUrl?: string
-  thumbnailUrl?: string
-  subscriberCount?: number
-  videoCount?: number
-  viewCount?: number
+  displayName: string
+  email?: string
+  imageUrl?: string
+  product: string
+  country?: string
 }
 
-export interface YouTubeStatus {
+export interface SpotifyStatus {
   configured: boolean
+  redirectUri: string
   connected: boolean
-  channel: YouTubeChannelInfo | null
+  profile: SpotifyProfile | null
+  premium: boolean
   connectedAt: string | null
   scopes: string[]
 }
 
-export const apiYouTube = {
-  status: () => request<YouTubeStatus>('/api/youtube/status'),
-
-  connectUrl: () => request<{ url: string }>('/api/youtube/connect-url', { method: 'POST' }),
-
-  refresh: () => request<{ channel: YouTubeChannelInfo | null }>('/api/youtube/refresh', {
-    method: 'POST',
-  }),
-
-  disconnect: () => request('/api/youtube/disconnect', { method: 'POST' }),
+export interface SpotifyTrack {
+  id: string
+  uri: string
+  title: string
+  artist: string
+  album?: string
+  artworkUrl?: string
+  durationMs: number
+  sourceUrl: string
+  isPlayable: boolean
 }
+
+export interface SpotifyPlaylist {
+  id: string
+  name: string
+  description?: string
+  imageUrl?: string
+  trackCount: number
+  owner?: string
+  public?: boolean
+  collaborative?: boolean
+}
+
+export const apiSpotify = {
+  status: () => request<SpotifyStatus>('/api/spotify/status'),
+
+  connectUrl: () =>
+    request<{ url: string; redirectUri: string }>('/api/spotify/connect-url', {
+      method: 'POST',
+    }),
+
+  token: () =>
+    request<{ accessToken: string; expiresAt: string | null }>('/api/spotify/token', {
+      method: 'POST',
+    }),
+
+  refresh: () =>
+    request<{ profile: SpotifyProfile }>('/api/spotify/refresh', { method: 'POST' }),
+
+  disconnect: () => request('/api/spotify/disconnect', { method: 'POST' }),
+
+  playlists: () =>
+    request<{ playlists: SpotifyPlaylist[]; total: number }>('/api/spotify/playlists'),
+
+  importPlaylist: (playlistId: string) =>
+    request<{ imported: number; skipped: number; total: number; playlistId: string }>(
+      `/api/spotify/playlists/${encodeURIComponent(playlistId)}/import`,
+      { method: 'POST' }
+    ),
+
+  search: (query: string) =>
+    request<{ tracks: SpotifyTrack[]; total: number }>(
+      `/api/spotify/search?q=${encodeURIComponent(query)}`
+    ),
+
+  resolve: (url: string) =>
+    request<SpotifyTrack>('/api/spotify/resolve', {
+      method: 'POST',
+      body: JSON.stringify({ url }),
+    }),
+}
+

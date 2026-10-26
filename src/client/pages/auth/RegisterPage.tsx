@@ -43,7 +43,7 @@ export function RegisterPage() {
             <div className="w-12 h-12 rounded-full gradient-brand flex items-center justify-center mx-auto mb-4 shadow-glow-green">
               <User className="w-6 h-6 text-pixtune-black" />
             </div>
-            <h2 className="text-heading-md font-bold text-pixtune-text mb-2">Criar conta</h2>
+            <h2 className="text-heading-md font-bold text-pixtune-text mb-2 md:text-heading-lg">Criar conta</h2>
             <p className="text-body-sm text-pixtune-textSecondary">
               Comece a gerenciar suas transmissões com o PixTune.
             </p>

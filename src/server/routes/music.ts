@@ -9,9 +9,14 @@ import {
   findNextPlayable,
   finishCurrent,
   queueItemInclude,
+  startQueueItem,
 } from '../services/queuePriority'
-import { extractYouTubeId, youTubeThumbnailUrl, youTubeWatchUrl } from '../../shared/youtube'
-import { resolveYouTubeVideo } from '../services/youtube'
+import { extractSpotifyTrackId } from '../../shared/spotify'
+import {
+  fetchSpotifyTrack,
+  getSpotifyAccessToken,
+  SpotifyError,
+} from '../services/spotify'
 
 const music = new Hono()
 
@@ -42,11 +47,19 @@ async function markPlaying(id: string) {
   })
 }
 
+function spotifyError(c: any, error: unknown) {
+  const code = error instanceof SpotifyError ? error.code : 'SPOTIFY_UNAVAILABLE'
+  const message =
+    error instanceof Error ? error.message : 'Não foi possível falar com o Spotify.'
+  const status = code === 'NOT_CONNECTED' ? 401 : 502
+  return c.json({ success: false, error: { code, message } }, status)
+}
+
 // Catálogo de músicas da fila do usuário
 music.get('/catalog', authMiddleware, async (c) => {
   const userId = getUserId(c)
   const tracks = await prisma.queueItem.findMany({
-    where: { userId },
+    where: { userId, provider: 'spotify' },
     select: {
       id: true,
       title: true,
@@ -76,14 +89,16 @@ music.get('/status', authMiddleware, async (c) => {
   const userId = getUserId(c)
 
   const current = await prisma.queueItem.findFirst({
-    where: { userId, status: { in: ['playing', 'paused'] } },
+    where: { userId, provider: 'spotify', status: { in: ['playing', 'paused'] } },
     include: queueItemInclude,
     orderBy: [{ playedAt: 'desc' }, { createdAt: 'desc' }],
   })
 
   const [settings, pendingCount] = await Promise.all([
     prisma.settings.findUnique({ where: { userId } }),
-    prisma.queueItem.count({ where: { userId, status: 'pending', providerId: { not: null } } }),
+    prisma.queueItem.count({
+      where: { userId, provider: 'spotify', status: 'pending', providerId: { not: null } },
+    }),
   ])
 
   return c.json({
@@ -101,136 +116,85 @@ music.get('/status', authMiddleware, async (c) => {
   })
 })
 
-// Resolver link/ID do YouTube em metadados (título, autor e thumbnail).
-// Usa o endpoint público oEmbed do YouTube; não requer chave de API.
-music.post('/resolve', authMiddleware, zValidator('json', z.object({ url: z.string().min(1) })), async (c) => {
-  const { url } = c.req.valid('json')
-  const videoId = extractYouTubeId(url)
+// Resolver link/ID do Spotify em metadados (título, artista, capa e duração).
+music.post(
+  '/resolve',
+  authMiddleware,
+  zValidator('json', z.object({ url: z.string().min(1) })),
+  async (c) => {
+    const userId = getUserId(c)
+    const { url } = c.req.valid('json')
+    const trackId = extractSpotifyTrackId(url)
 
-  if (!videoId) {
-    return c.json(
-      {
-        success: false,
-        error: {
-          code: 'INVALID_YOUTUBE_URL',
-          message: 'Informe um link ou ID válido do YouTube',
+    if (!trackId) {
+      return c.json(
+        {
+          success: false,
+          error: {
+            code: 'INVALID_SPOTIFY_URL',
+            message: 'Informe um link ou ID válido de uma faixa do Spotify',
+          },
         },
-      },
-      400
-    )
-  }
+        400
+      )
+    }
 
-  const fallback = {
-    videoId,
-    title: 'Vídeo do YouTube',
-    artist: 'YouTube',
-    artworkUrl: youTubeThumbnailUrl(videoId),
-    sourceUrl: youTubeWatchUrl(videoId),
+    try {
+      const accessToken = await getSpotifyAccessToken(userId)
+      const track = await fetchSpotifyTrack(accessToken, trackId)
+      return c.json({ success: true, data: track })
+    } catch (error) {
+      return spotifyError(c, error)
+    }
   }
-
-  try {
-    const resolved = await resolveYouTubeVideo(videoId)
-    return c.json({ success: true, data: resolved })
-  } catch {
-    // Sem internet ou oEmbed indisponível: o player ainda pode tocar pelo ID.
-    return c.json({ success: true, data: fallback })
-  }
-})
+)
 
 // Reproduzir música
 music.post('/play', authMiddleware, async (c) => {
   const userId = getUserId(c)
   const body = await c.req.json().catch(() => ({}))
 
-  // Se foi passado um trackId, só é permitido tocar a faixa atual ou a
-  // próxima da fila (a de maior valor). Isso preserva a regra imutável de
-  // prioridade, mesmo com cliques manuais do streamer.
-  if (body?.trackId) {
-    const track = await prisma.queueItem.findFirst({
-      where: { id: body.trackId, userId },
-      include: queueItemInclude,
-    })
-
-    if (!track) {
-      return c.json(
-        { success: false, error: { code: 'NOT_FOUND', message: 'Item não encontrado na fila' } },
-        404
-      )
-    }
-
-    if (!track.providerId || !extractYouTubeId(track.providerId)) {
-      return c.json(
-        {
-          success: false,
-          error: {
-            code: 'NO_YOUTUBE_VIDEO',
-            message: 'Este item não tem um vídeo do YouTube configurado',
-          },
-        },
-        422
-      )
-    }
-
-    if (track.status === 'pending') {
-      const [next, current] = await Promise.all([
-        findNextPlayable(userId),
-        findActiveItem(userId),
-      ])
-      const outranksCurrent =
-        !current ||
-        current.id === track.id ||
-        donationAmountCents(track) > donationAmountCents(current)
-
-      if (!next || next.id !== track.id || !outranksCurrent) {
-        return c.json(
-          {
-            success: false,
-            error: {
-              code: 'PRIORITY_LOCKED',
-              message: 'A próxima música é definida pelo maior valor de doação.',
-            },
-          },
-          409
-        )
-      }
-    } else if (track.status !== 'playing' && track.status !== 'paused') {
-      return c.json(
-        {
-          success: false,
-          error: {
-            code: 'PRIORITY_LOCKED',
-            message: 'Só é possível tocar a música atual ou a próxima da fila.',
-          },
-        },
-        409
-      )
-    }
-
-    await finishCurrent(userId, 'played')
-    const playing = await markPlaying(track.id)
-
-    return c.json({ success: true, data: { isPlaying: true, track: trackPayload(playing) } })
+  try {
+    await getSpotifyAccessToken(userId)
+  } catch (error) {
+    return spotifyError(c, error)
   }
 
-  // Se existe uma faixa pausada, retomá-la — a menos que uma doação de valor
+  // Se foi passado um trackId, só é permitido tocar a faixa atual ou a
+  // próxima da fila (a de maior valor). A validação e a promoção acontecem
+  // na mesma transação para não furar a prioridade em uma doação concorrente.
+  if (body?.trackId) {
+    const result = await startQueueItem(userId, body.trackId)
+
+    if (!result.ok) {
+      const status =
+        result.code === 'NOT_FOUND' ? 404 : result.code === 'NO_SPOTIFY_TRACK' ? 422 : 409
+      return c.json(
+        { success: false, error: { code: result.code, message: result.message } },
+        status
+      )
+    }
+
+    return c.json({
+      success: true,
+      data: { isPlaying: true, track: trackPayload(result.track) },
+    })
+  }
+
+  // Se já existe uma faixa ativa, retomá-la — a menos que uma doação de valor
   // maior esteja esperando na fila.
-  const [paused, next] = await Promise.all([
-    prisma.queueItem.findFirst({
-      where: { userId, status: 'paused', providerId: { not: null } },
-      include: queueItemInclude,
-      orderBy: [{ playedAt: 'desc' }, { createdAt: 'desc' }],
-    }),
+  const [active, next] = await Promise.all([
+    findActiveItem(userId),
     findNextPlayable(userId),
   ])
 
-  if (paused && (!next || donationAmountCents(paused) >= donationAmountCents(next))) {
-    await finishCurrent(userId, 'played')
-    const playing = await markPlaying(paused.id)
+  if (active && (!next || donationAmountCents(active) >= donationAmountCents(next))) {
+    const playing = await markPlaying(active.id)
     return c.json({ success: true, data: { isPlaying: true, track: trackPayload(playing) } })
   }
 
   if (next) {
-    await finishCurrent(userId, paused ? 'skipped' : 'played')
+    await finishCurrent(userId, active ? 'skipped' : 'played')
     const playing = await markPlaying(next.id)
     return c.json({ success: true, data: { isPlaying: true, track: trackPayload(playing) } })
   }
@@ -249,7 +213,7 @@ music.post('/play', authMiddleware, async (c) => {
 music.post('/pause', authMiddleware, async (c) => {
   const userId = getUserId(c)
   await prisma.queueItem.updateMany({
-    where: { userId, status: 'playing' },
+    where: { userId, provider: 'spotify', status: 'playing' },
     data: { status: 'paused' },
   })
   return c.json({ success: true, data: { isPlaying: false } })
@@ -285,7 +249,7 @@ music.post('/ended', authMiddleware, async (c) => {
   return c.json({ success: true, data: { track: null } })
 })
 
-// Persistir a duração real informada pelo player do YouTube
+// Persistir a duração real informada pelo player
 music.post(
   '/duration',
   authMiddleware,
@@ -295,7 +259,7 @@ music.post(
     const { trackId, durationMs } = c.req.valid('json')
 
     await prisma.queueItem.updateMany({
-      where: { id: trackId, userId },
+      where: { id: trackId, userId, provider: 'spotify' },
       data: { durationMs: Math.round(durationMs) },
     })
 
@@ -304,17 +268,22 @@ music.post(
 )
 
 // Definir volume
-music.post('/volume', authMiddleware, zValidator('json', z.object({ volume: z.number().min(0).max(100) })), async (c) => {
-  const userId = getUserId(c)
-  const { volume } = c.req.valid('json')
+music.post(
+  '/volume',
+  authMiddleware,
+  zValidator('json', z.object({ volume: z.number().min(0).max(100) })),
+  async (c) => {
+    const userId = getUserId(c)
+    const { volume } = c.req.valid('json')
 
-  await prisma.settings.upsert({
-    where: { userId },
-    update: { defaultVolume: volume },
-    create: { userId, defaultVolume: volume },
-  })
+    await prisma.settings.upsert({
+      where: { userId },
+      update: { defaultVolume: volume },
+      create: { userId, defaultVolume: volume },
+    })
 
-  return c.json({ success: true, data: { volume } })
-})
+    return c.json({ success: true, data: { volume } })
+  }
+)
 
 export default music

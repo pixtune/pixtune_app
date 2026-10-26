@@ -2,7 +2,7 @@
 
 Plataforma musical para streamers que transforma a **mensagem da doação do Live Pix** em música.
 
-O doador escreve o nome da música na mensagem da doação. O PixTune detecta o pedido, busca o vídeo no YouTube e coloca a faixa na fila. Mensagens que não são pedidos de música são ignoradas.
+O doador escreve o nome da música na mensagem da doação. O PixTune detecta o pedido, busca a faixa no Spotify e coloca na fila. Mensagens que não são pedidos de música são ignoradas. A reprodução usa exclusivamente o **Web Playback SDK oficial do Spotify**.
 
 O PixTune **não** processa pagamentos, **não** recebe dinheiro, **não** armazena saldos e **não** substitui o Live Pix. Ele apenas recebe notificações de doações já processadas pelo provedor e reage à mensagem escrita pelo doador.
 
@@ -17,21 +17,20 @@ Webhook do Live Pix chega ao PixTune
         ↓
 Mensagem é normalizada e classificada
         ↓
-iTunes Search valida o nome da música
-        ↓
-YouTube Data API encontra o vídeo (se a chave estiver configurada)
+Spotify Search encontra a faixa
         ↓
 A maior doação assume a frente (derruba a menor)
         ↓
-Player oficial do YouTube reproduz somente o áudio
+Web Playback SDK oficial do Spotify reproduz no navegador
 ```
 
 - **Prioridade imutável por valor:** a doação de maior valor sempre toca primeiro. Se ela chegar enquanto uma música de menor valor está tocando, a menor é interrompida na hora e a maior começa imediatamente. Em valores iguais, vale a ordem de chegada.
 - O streamer define apenas o **valor mínimo inicial** na página **Regras**. O valor de cada doação vem do Live Pix e é fixo: não há como reordenar, aumentar ou trocar a prioridade manualmente.
 - Verbos comuns são removidos: `toca`, `coloca`, `quero ouvir`, `play`, `dj`, `por favor`, entre outros.
 - Mensagens como `pizza`, `boa noite`, `obrigado`, `oi`, `essa é top` e `manda ver` são descartadas.
-- Um link ou ID do YouTube na mensagem é aceito diretamente.
-- Se a música for detectada mas ainda não houver vídeo, o pedido entra na fila como **“aguardando link”**. Você pode anexar o link pela página **Fila**.
+- Um link, URI ou ID de faixa do Spotify na mensagem é aceito diretamente.
+- Se a música não for encontrada no Spotify, o pedido é registrado no histórico e não interrompe a música atual. O doador pode usar o nome exato ou colar um link do Spotify.
+- A conta do streamer precisa ter **Spotify Premium**; o Web Playback SDK não reproduz em contas gratuitas.
 
 A detecção é heurística. Ela foi feita para ser previsível e conservadora, não para adivinhar intenção em frases ambíguas. Veja [Limitações da detecção](#limitações-da-detecção).
 
@@ -48,8 +47,8 @@ A detecção é heurística. Ela foi feita para ser previsível e conservadora, 
 | Banco | SQLite via Prisma ORM |
 | Autenticação | E-mail/senha (JWT + sessões no banco, `scrypt`) |
 | Validação | Zod |
-| Detecção musical | iTunes Search API + YouTube Data API v3 |
-| Reprodução | IFrame Player API oficial do YouTube (áudio) |
+| Detecção musical | Spotify Web API (Search) |
+| Reprodução | Web Playback SDK oficial do Spotify (Spotify Connect) |
 
 ---
 
@@ -71,9 +70,10 @@ O brandbook é uma referência visual. Recursos de ranking, trono, VIP e overlay
 
 - Node.js 20 ou superior
 - npm 9 ou superior
-- Internet para detectar músicas e reproduzir o YouTube
+- Internet para buscar faixas e reproduzir pelo Spotify
+- Uma conta **Spotify Premium** para o streamer que vai reproduzir
 
-Não é necessário cartão de crédito nem serviços pagos para rodar localmente. A chave da YouTube Data API é gratuita, mas tem cota diária.
+O Spotify não oferece reprodução server-side: o áudio sai do próprio Spotify para o navegador onde o PixTune está aberto.
 
 ---
 
@@ -110,57 +110,35 @@ JWT_SECRET="troque-por-uma-chave-longa-e-aleatoria"
 NODE_ENV=development
 ```
 
-### Chave do YouTube (recomendada)
+### Conectar a conta do Spotify (OAuth 2.0 + Web Playback SDK)
 
-A reprodução usa o player oficial e **não precisa de chave**. A chave é usada apenas para transformar o nome da música em um vídeo do YouTube.
+A seção **Configurações → Spotify** conecta a conta pelo OAuth 2.0 oficial. O servidor guarda o
+refresh token e entrega ao navegador apenas um access token de curta duração, necessário para
+registrar o dispositivo Spotify Connect criado pelo Web Playback SDK.
 
-```env
-YOUTUBE_API_KEY="sua-chave-da-youtube-data-api-v3"
-```
+Como configurar:
 
-Como obter gratuitamente:
-
-1. Abra o [Google Cloud Console](https://console.cloud.google.com/).
-2. Crie um projeto.
-3. Ative a **YouTube Data API v3**.
-4. Crie uma **API key** em “Credenciais”.
-5. Cole a chave em `YOUTUBE_API_KEY` e reinicie a API.
-
-A cota gratuita padrão é de 10.000 unidades por dia. Cada chamada de `search.list` custa 100 unidades. Para um volume alto de pedidos, considere cache ou uma estratégia de busca própria.
-
-**Sem a chave**, o PixTune ainda detecta a música pelo iTunes e coloca o pedido na fila como “aguardando link”. A página **Fila** permite anexar o link manualmente. A tela **Configurações → Música** mostra um aviso quando a chave não está configurada.
-
-As credenciais do Live Pix são informadas em **Configurações → Live Pix** e ficam no banco local (SQLite). Nenhuma credencial real vem preenchida no repositório.
-
-### Conectar a conta do YouTube (OAuth 2.0)
-
-A seção **Configurações → YouTube** conecta o canal via OAuth 2.0 oficial do Google e autoriza a
-**leitura** dos dados do canal (nome, avatar, inscritos). Os tokens ficam no banco local. Este OAuth
-é separado do login: serve apenas para ler o canal.
-
-> Importante: não existe API oficial para “tocar como o usuário logado”. A reprodução continua pela
-> IFrame Player API oficial e já funciona sem login. A conexão **não** dá acesso a YouTube Music,
-> biblioteca do YT Music, remoção de anúncios ou restrições de idade/região. A conta usada na
-> reprodução é a do **navegador** (sessão do `youtube.com`) — veja [Reprodução](#reprodução).
-
-Como configurar (gratuito):
-
-1. No [Google Cloud Console](https://console.cloud.google.com/), crie um projeto e ative a **YouTube Data API v3**.
-2. Em **Tela de consentimento OAuth**, escolha “Externo”, preencha os dados e adicione sua conta como **usuário de teste**.
-3. Adicione o escopo `https://www.googleapis.com/auth/youtube.readonly`.
-4. Em **Credenciais**, crie um **ID do cliente OAuth** do tipo **Aplicativo da Web**.
-5. Cadastre exatamente esta **URI de redirecionamento autorizado**:
-   - `http://localhost:3001/api/youtube/callback`
-6. Cole os valores no `.env` e reinicie a API:
+1. Abra o [Spotify for Developers](https://developer.spotify.com/dashboard) e crie um app.
+2. Em **Redirect URIs**, cadastre exatamente:
+   - `http://localhost:3001/api/spotify/callback`
+3. Copie o **Client ID** e o **Client Secret** para o `.env` e reinicie a API:
 
 ```env
-YOUTUBE_CLIENT_ID="seu-client-id.apps.googleusercontent.com"
-YOUTUBE_CLIENT_SECRET="seu-client-secret"
+SPOTIFY_CLIENT_ID="seu-client-id"
+SPOTIFY_CLIENT_SECRET="seu-client-secret"
+SPOTIFY_REDIRECT_URI="http://localhost:3001/api/spotify/callback"
 ```
 
-Sem esses valores, a seção **Configurações → YouTube** aparece desativada com o passo a passo.
-Escopos do YouTube são sensíveis/restritos: para uso público o Google exige verificação do app; em
-modo de teste apenas os usuários de teste autorizam.
+4. Entre no PixTune, abra **Configurações → Spotify** e clique em **Conectar conta do Spotify**.
+5. Confirme que a conta exibida é **Premium**.
+
+> **Modo de desenvolvimento:** o Spotify autoriza no máximo 5 contas por app. Para atender mais
+> streamers, cada instalação pode usar credenciais próprias ou o app precisa de aprovação do Spotify.
+> O uso em transmissão pública/comercial é restrito pelos termos do Spotify; o PixTune usa apenas
+> APIs oficiais, mas a conta/app podem ser limitados.
+
+As credenciais do Live Pix são informadas em **Configurações → Live Pix** e ficam no banco local
+(SQLite). Nenhuma credencial real vem preenchida no repositório.
 
 ### Hospedagem
 
@@ -197,17 +175,17 @@ src/
 │   ├── components/          # UI e proteção de rotas
 │   ├── contexts/            # AuthContext
 │   ├── layouts/             # PublicLayout, AppLayout
-│   ├── player/              # Player global de áudio do YouTube
+│   ├── player/              # SpotifyAudioPlayer (Web Playback SDK oficial)
 │   └── pages/               # Landing, Login, Register, Dashboard, Fila, Histórico, Regras, Configurações
-├── shared/                  # Tipos, utilitários e parsing de links do YouTube
+├── shared/                  # Tipos, utilitários e parsing de links do Spotify
 └── server/                  # Backend Hono
     ├── env.ts               # Carregamento simples do .env
     ├── index.ts             # App, CORS e montagem das rotas
     ├── main.ts              # Adaptador Node HTTP
     ├── lib/prisma.ts
     ├── middleware/auth.ts   # JWT + sessão + isolamento por userId
-    ├── routes/              # auth, donations, queue, music, settings, rules, youtube
-    └── services/            # auth, googleOAuth, livepix, rules, songRequest, youtube
+    ├── routes/              # auth, donations, queue, music, settings, rules, spotify
+    └── services/            # auth, googleOAuth, livepix, rules, spotify, spotifySongRequest
 prisma/schema.prisma         # User, Session, Settings, Integration, DonationEvent, DonationRule, QueueItem...
 ```
 
@@ -247,7 +225,7 @@ prisma/schema.prisma         # User, Session, Settings, Integration, DonationEve
    - detecta a música escrita na mensagem;
    - ignora mensagens que não são pedidos musicais;
    - coloca a faixa na fila por prioridade de valor; se for a maior, derruba a atual e toca na hora;
-   - registra `processed`, `validated` (aguardando link), `ignored` ou `failed`.
+   - registra `processed`, `ignored` ou `failed`.
 
 ### Status, teste e desconexão
 
@@ -310,21 +288,24 @@ curl -X POST http://localhost:3001/api/donations/simulate \
   -d '{"amount": 7.5, "donorName": "Maria", "message": "toca Evidências"}'
 ```
 
-Resposta esperada (sem chave do YouTube):
+Resposta esperada (com a conta do Spotify conectada):
 
 ```json
 {
   "success": true,
   "data": {
-    "status": "validated",
+    "status": "processed",
     "songTitle": "Evidências",
     "songArtist": "Chitãozinho & Xororó",
-    "detectedVideoId": null,
-    "queueItemStatus": "pending",
-    "detectionNote": "Música detectada, mas a busca no YouTube não está configurada (YOUTUBE_API_KEY)."
+    "spotifyTrackId": "4cOdK2wGLETKBW3PvgPWqT",
+    "queueItemStatus": "playing",
+    "detectionNote": null
   }
 }
 ```
+
+Se a conta do Spotify ainda não estiver conectada, o pedido é registrado como
+`failed` com uma mensagem pedindo a conexão; nenhuma faixa é enfileirada.
 
 Teste uma mensagem que não é música:
 
@@ -395,22 +376,22 @@ Cadastre no Live Pix a URL `https://<subdominio>.ngrok-free.app/api/donations/we
 1. A mensagem é normalizada (acentos, caixa, pontuação e emojis).
 2. Verbos de pedido e saudações são removidos.
 3. Mensagens vazias, longas demais, só com números ou presentes em uma lista de conversa comum são descartadas.
-4. Se houver um link do YouTube, o próprio link é usado e os metadados vêm do oEmbed público.
-5. Caso contrário, o nome é validado pela **iTunes Search API** (pública, sem chave).
-6. Com `YOUTUBE_API_KEY`, a **YouTube Data API v3** busca um vídeo de música (`videoCategoryId=10`).
-7. O resultado precisa ter título/artista fortemente relacionados ao pedido. Karaokê, cover, tributo e instrumental recebem penalidade.
+4. Se houver um link, URI ou ID de faixa do Spotify, ele é usado diretamente.
+5. Caso contrário, o nome é buscado pela **Spotify Web API (Search)**.
+6. O resultado precisa ter título e artista fortemente relacionados ao pedido. Karaokê, cover, tributo e instrumental recebem penalidade.
+7. Links do YouTube não são aceitos como pedido de música; o doador precisa usar o nome ou um link do Spotify.
 
 ### Reprodução
 
-- O player oficial é criado em um contêiner fora da tela: o usuário ouve apenas o áudio e o vídeo não aparece.
-- A conta usada na reprodução é a do **navegador** (sessão do `youtube.com`), não o login OAuth. Se você estiver logado no YouTube **neste mesmo navegador** e permitir cookies de terceiros do `youtube.com`, o próprio YouTube aplica os benefícios da conta ao player — por exemplo, **Premium sem anúncios** e vídeos com restrição de idade. O player é incorporado a partir de `www.youtube.com` (nunca `youtube-nocookie.com`). O PixTune não lê nem guarda essa sessão; sem os cookies, a música toca normalmente, só sem esses benefícios. Não existe API oficial para “tocar como a conta”.
-- Nenhum arquivo é baixado, nenhum áudio é extraído e nenhuma proteção do YouTube é contornada.
+- A reprodução usa o **Web Playback SDK oficial do Spotify**. O SDK registra um dispositivo Spotify Connect no navegador e entrega somente áudio.
+- A conta do streamer precisa ser **Spotify Premium**. Contas gratuitas não reproduzem pelo Web Playback SDK.
+- O áudio sai do próprio Spotify para o navegador; o servidor não baixa, extrai, armazena nem contorna a proteção do áudio.
 - O backend controla o estado da fila (`play`, `pause`, `next-track`, `ended`) e o cliente sincroniza o player a cada poucos segundos.
-- Ao terminar um vídeo, a **maior doação pendente** é promovida automaticamente, não a mais antiga.
+- Ao terminar uma faixa, a **maior doação pendente** é promovida automaticamente, não a mais antiga.
 - Se uma doação maior chegar enquanto outra música toca, a menor é marcada como `skipped` e a maior começa imediatamente. A música derrubada não volta para a fila.
 - Se **Reprodução automática** estiver ativa e o player estiver parado, a doação de maior valor inicia a fila.
 - É necessário ter internet e manter a aba do PixTune aberta e audível durante a live. O navegador pode bloquear o autoplay até o primeiro clique em **Play**.
-- Se um pedido ficar como **“aguardando link”**, use **Fila → Anexar link** para informar a URL do YouTube. Assim que o link for anexado, se aquele pedido for a maior doação, ele derruba a música atual e toca; o histórico é atualizado.
+- O player do PixTune não aparece como um player de vídeo; ele é um dispositivo Spotify Connect controlado pela página.
 
 ### Prioridade por valor
 
@@ -422,25 +403,27 @@ estas regras, implementadas em `src/server/services/queuePriority.ts`:
 | Nova doação maior que a música atual | A atual vira `skipped` e a nova toca imediatamente |
 | Nova doação menor ou igual | Entra como `pending` na posição de valor correspondente |
 | Valores iguais | Quem chegou primeiro toca primeiro (FIFO) |
-| Música atual termina | A maior doação pendente com vídeo toca em seguida |
-| Doação sem vídeo | Fica “aguardando link”; não derruba a atual até o link ser anexado |
-| Música manual | Vale 0 e fica depois das doações |
+| Música atual termina | A maior doação pendente do Spotify toca em seguida |
+| Música manual ou importada de playlist | Vale 0 e fica depois das doações |
 
 O valor mínimo inicial é a única configuração do streamer para a prioridade. O
 valor da doação em si não pode ser editado, aumentado ou reordenado pela interface.
 As rotas de reordenação recusam alterar itens de doação, e “voltar” fica bloqueado
 para músicas doadas e enquanto houver doações pendentes.
 
-> A IFrame API não oferece um modo “audio-only” oficial. O PixTune usa o player oficial com o vídeo fora da tela, sem baixar ou separar o stream. Verifique os Termos de Uso do YouTube para o seu caso de uso comercial; para produção, avalie manter o player visível ou usar um serviço/licença adequado.
+> **Uso em live:** os termos do Spotify restringem transmissões públicas/comerciais
+> e a sincronização de música com mídia visual. O PixTune usa apenas APIs oficiais,
+> mas a conta ou o aplicativo podem ser limitados ou suspensos pelo Spotify. Avalie
+> esse risco antes de usar em produção.
 
 ### Limitações da detecção
 
 - É uma heurística, não um classificador semântico. Frases ambíguas podem ser ignoradas.
 - A lista de mensagens comuns é conservadora e pode ser ajustada em `src/server/services/songRequest.ts`.
 - Nomes de músicas que coincidem com comida/conversa (por exemplo, “Pizza”) só são aceitos quando há contexto suficiente, como o artista na mensagem.
-- O iTunes pode não ter determinada música; nesse caso, a busca direta no YouTube (se configurada) tenta resolver.
-- A YouTube Data API tem cota diária. Erros de cota fazem o pedido ficar “aguardando link” em vez de falhar.
-- YouTube Music compartilha os mesmos IDs de vídeo; não existe API pública de reprodução específica do YouTube Music neste projeto.
+- O Spotify pode não ter determinada música ou a faixa pode não estar disponível no mercado da conta; nesse caso o pedido é registrado como `failed` e não entra na fila.
+- O app do Spotify em **modo de desenvolvimento** aceita no máximo 5 usuários autenticados. Para mais streamers, é necessário um app aprovado pelo Spotify ou credenciais por instalação.
+- A reprodução depende de o navegador suportar o Web Playback SDK e DRM/Widevine, além de a aba permanecer aberta.
 
 ---
 
@@ -450,9 +433,10 @@ para músicas doadas e enquanto houver doações pendentes.
 - JWT + sessão persistida; logout remove a sessão.
 - Validação de entrada com Zod.
 - Segredos apenas no backend; o frontend nunca recebe `passwordHash`, `clientSecret` ou tokens de terceiros.
-- A chave do YouTube fica no `.env` do servidor e nunca é enviada ao navegador.
-- Na conexão do canal do YouTube (OAuth do Google), o `client_secret` fica só no servidor; o navegador recebe apenas a URL de autorização. O `state` é assinado (JWT) e vinculado a um cookie `HttpOnly` anti-CSRF.
-- As credenciais do Live Pix ficam no banco local em texto simples (metadata da integração). O mesmo vale para os tokens de atualização do YouTube. Para produção, criptografe esses campos ou use um cofre de segredos.
+- O `SPOTIFY_CLIENT_SECRET` fica no `.env` do servidor e nunca é enviado ao navegador.
+- Na conexão do Spotify (OAuth 2.0), o `client_secret` fica só no servidor; o navegador recebe apenas a URL de autorização. O `state` é assinado (JWT) e vinculado a um cookie `HttpOnly` anti-CSRF.
+- O refresh token do Spotify fica no banco local. O navegador recebe apenas access tokens de curta duração para o Web Playback SDK.
+- As credenciais do Live Pix ficam no banco local em texto simples (metadata da integração). Para produção, criptografe esses campos ou use um cofre de segredos.
 - `.env` fora do Git; `.env.example` sem credenciais.
 - Mensagens de erro de login não revelam se o e-mail existe.
 
@@ -461,32 +445,37 @@ para músicas doadas e enquanto houver doações pendentes.
 ## Testes e verificação
 
 ```bash
-npm test            # 57 testes unitários
+npm test            # testes unitários
 npm run typecheck   # cliente + servidor
 npm run build       # build de produção
 ```
 
 Os testes unitários cobrem:
 
-- prioridade por valor: maior primeiro, empate FIFO, pré-empção estrita, item sem vídeo e fila parada;
+- prioridade por valor: maior primeiro, empate FIFO, pré-empção estrita, item sem faixa e fila parada;
 - motor legado de regras mantido por compatibilidade (não usado no fluxo de doações);
 - formatadores compartilhados;
-- extração de IDs de links do YouTube;
-- parsing da mensagem, blocklist de conversa comum, pontuação do iTunes e do YouTube;
-- detecção com iTunes, busca no YouTube, link direto e fallback sem chave;
+- parsing de links, URIs e IDs de faixa/playlist do Spotify;
+- parsing da mensagem e blocklist de conversa comum;
+- detecção de pedidos por link ou nome no Spotify e rejeição de links do YouTube;
+- OAuth, busca, normalização e paginação de playlists do Spotify;
 - configuração e mapeamento do LivePix oficial;
-- OAuth do Google: configuração por variáveis, URIs de callback, assinatura/verificação do `state` e leitura do canal do YouTube.
+- serviço legado de OAuth do Google, mantido apenas por compatibilidade.
 
-Testes E2E automatizados (Playwright) ainda não estão implementados. O fluxo completo foi verificado manualmente e via API: cadastro, login, sessão, isolamento, prioridade por valor, simulação de doação com música, simulação de mensagem ignorada, fila, anexação de link e reprodução de áudio no navegador. Também foram validados: 5 → 10 (10 derruba 5), 10 → 7 (7 espera), 20 → 20 (empate espera), derrubada ao anexar link e bloqueio de reprodução manual fora da prioridade.
+Testes E2E automatizados (Playwright) ainda não estão implementados. O fluxo foi
+verificado manualmente via API e navegador: cadastro, login, sessão, isolamento,
+prioridade por valor, simulação de doação, fila, estados de conexão do Spotify e
+renderização das páginas. A reprodução real do Spotify depende de credenciais
+válidas e de uma conta Premium no ambiente do streamer.
 
 ---
 
 ## Avisos
 
-- PixTune não é afiliado ao Spotify, YouTube, iTunes/Apple ou Live Pix.
+- PixTune não é afiliado ao Spotify, Live Pix ou qualquer outro provedor citado.
 - Não reproduza conteúdo protegido por métodos não permitidos.
 - Respeite a documentação e os termos de cada provedor.
-- A decisão de exibir ou ocultar o vídeo do YouTube é sua; verifique os Termos de Uso aplicáveis.
+- O uso do Spotify em transmissões públicas ou comerciais é restrito pelos termos do Spotify; o PixTune não contorna essas regras.
 
 ## Licença
 

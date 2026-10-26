@@ -1,17 +1,16 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { Music, Play, Pause, SkipForward, SkipBack, TrendingUp, Clock, ShieldAlert, CheckCircle2, AlertCircle, Activity, Zap, ExternalLink, Trophy } from 'lucide-react'
+import { Music, Play, Pause, SkipForward, SkipBack, TrendingUp, Clock, Zap, ExternalLink, Trophy } from 'lucide-react'
 import { Button } from '@client/components/ui/Button'
 import { Card } from '@client/components/ui/Card'
 import { Badge } from '@client/components/ui/Badge'
 import { apiQueue, apiDonations } from '@client/api/client'
-import { useAudioPlayer } from '@client/player/YouTubeAudioPlayer'
+import { useAudioPlayer } from '@client/player/SpotifyAudioPlayer'
 import { formatDuration, formatCurrency } from '@shared/utils'
 
 export function DashboardPage() {
   const [queue, setQueue] = useState<any[]>([])
   const [donationEvents, setDonationEvents] = useState<any[]>([])
-  const [livepixStatus, setLivepixStatus] = useState<'connected' | 'disconnected' | 'error'>('disconnected')
   const [loading, setLoading] = useState(true)
   const {
     track: currentTrack,
@@ -33,11 +32,7 @@ export function DashboardPage() {
 
   async function loadData() {
     try {
-      await Promise.all([
-        loadQueue(),
-        loadDonations(),
-        checkLivePixStatus(),
-      ])
+      await Promise.all([loadQueue(), loadDonations()])
     } catch (err) {
       console.error('Erro ao carregar dados:', err)
     } finally {
@@ -59,31 +54,6 @@ export function DashboardPage() {
     }
   }
 
-  async function checkLivePixStatus() {
-    const res = await apiDonations.config()
-    if (res.success && res.data) {
-      setLivepixStatus(res.data.connected ? 'connected' : 'disconnected')
-    }
-  }
-
-  const statusConfig = (status: string) => {
-    switch (status) {
-      case 'connected': return { color: 'bg-pixtune-success', label: 'Conectado', icon: <CheckCircle2 className="w-4 h-4" /> }
-      case 'connecting': return { color: 'bg-yellow-500', label: 'Conectando...', icon: <Activity className="w-4 h-4" /> }
-      case 'error': return { color: 'bg-pixtune-danger', label: 'Erro', icon: <AlertCircle className="w-4 h-4" /> }
-      default: return { color: 'bg-pixtune-textMuted', label: 'Desconectado', icon: <ShieldAlert className="w-4 h-4" /> }
-    }
-  }
-
-  const musicStatus: 'connected' | 'connecting' | 'error' = playerError
-    ? 'error'
-    : isReady
-      ? 'connected'
-      : 'connecting'
-
-  const livepix = statusConfig(livepixStatus)
-  const music = statusConfig(musicStatus)
-
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-pixtune-bg">
@@ -96,14 +66,10 @@ export function DashboardPage() {
     <div className="space-y-8">
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
         <div>
-          <h1 className="text-heading-lg font-bold text-pixtune-text">Painel do Streamer</h1>
+          <h1 className="text-heading-lg font-bold text-pixtune-text md:text-page-title">Painel do Streamer</h1>
           <p className="text-body-sm text-pixtune-textSecondary">
             Gerencie sua fila e acompanhe doações em tempo real.
           </p>
-        </div>
-        <div className="flex items-center gap-4">
-          <ConnectionBadge label="Live Pix" status={livepixStatus} config={livepix} />
-          <ConnectionBadge label="Música" status={musicStatus} config={music} />
         </div>
       </div>
 
@@ -155,17 +121,6 @@ export function DashboardPage() {
   }
 }
 
-function ConnectionBadge({ label, status, config }: { label: string; status: string; config: any }) {
-  return (
-    <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-pixtune-surfaceElevated border border-pixtune-border text-body-sm">
-      <div className={`w-2 h-2 rounded-full ${config.color} animate-pulse`} aria-label={`${label}: ${config.label}`} />
-      <span className={`font-medium ${status === 'connected' ? 'text-pixtune-success' : status === 'error' ? 'text-pixtune-danger' : 'text-pixtune-textSecondary'}`}>
-        {config.label}
-      </span>
-    </div>
-  )
-}
-
 function StatCard({ title, value, subtitle, icon }: { title: string; value: string | number; subtitle: string; icon: React.ReactNode }) {
   return (
     <Card className="p-4">
@@ -215,7 +170,7 @@ function NowPlayingCard({
   const navigate = useNavigate()
   const totalMs = durationMs || track?.durationMs || 0
   const progress = totalMs > 0 ? Math.min(100, (positionMs / totalMs) * 100) : 0
-  const playable = Boolean(track?.providerId)
+  const playable = track?.provider === 'spotify' && Boolean(track?.providerId)
 
   return (
     <Card className="p-6">
@@ -223,10 +178,9 @@ function NowPlayingCard({
         <div className="min-w-0">
           <h3 className="text-body font-semibold text-pixtune-text">Agora tocando</h3>
           <p className="text-caption text-pixtune-textSecondary">
-            Áudio do YouTube, sem exibir o vídeo • a maior doação toca primeiro
+            Reprodução oficial do Spotify no navegador. A conta precisa de Premium.
           </p>
         </div>
-        <Badge variant="info" className="w-fit flex-shrink-0">YouTube • áudio</Badge>
       </div>
       <div className="space-y-6">
         {track ? (
@@ -248,7 +202,7 @@ function NowPlayingCard({
                   <p className="text-caption text-pixtune-textMuted truncate">{track.album}</p>
                 )}
                 <div className="flex items-center gap-2 mt-1 flex-wrap">
-                  <Badge variant={track.provider === 'youtube' ? 'info' : 'default'}>{track.provider === 'youtube' ? 'YouTube' : track.provider}</Badge>
+                  <Badge variant={track.provider === 'spotify' ? 'info' : 'default'}>{track.provider === 'spotify' ? 'Spotify' : track.provider}</Badge>
                   {track.amountCents > 0 && (
                     <Badge variant="success">
                       <Trophy className="mr-1 h-3 w-3" aria-hidden="true" />
@@ -256,14 +210,14 @@ function NowPlayingCard({
                       {track.donorName ? ` • ${track.donorName}` : ''}
                     </Badge>
                   )}
-                  {track.sourceUrl && (
+                  {track.provider === 'spotify' && track.sourceUrl && (
                     <a
                       href={track.sourceUrl}
                       target="_blank"
                       rel="noreferrer"
                       className="inline-flex items-center gap-1 text-caption text-pixtune-primary hover:text-pixtune-primaryHover"
                     >
-                      Abrir no YouTube <ExternalLink className="w-3 h-3" />
+                      Abrir no Spotify <ExternalLink className="w-3 h-3" />
                     </a>
                   )}
                 </div>
@@ -308,7 +262,9 @@ function NowPlayingCard({
                 <SkipForward className="w-5 h-5" />
               </Button>
               {!isReady && (
-                <span className="text-caption text-pixtune-textMuted">Carregando player do YouTube...</span>
+                <span className="text-caption text-pixtune-textMuted">
+                  {error ? 'Player indisponível' : 'Carregando player do Spotify...'}
+                </span>
               )}
             </div>
 
@@ -328,7 +284,7 @@ function NowPlayingCard({
 
             {!playable && (
               <p className="text-caption text-pixtune-warning" role="status">
-                Este item não tem um link do YouTube. Abra a fila e adicione um link para poder ouvir.
+                Este item não tem uma faixa do Spotify. Abra a fila e adicione um link para poder ouvir.
               </p>
             )}
             {error && (
@@ -373,7 +329,7 @@ function QueueControlsCard({ onClear }: { onClear: () => void | Promise<void> })
 function RecentDonationsCard({ events }: { events: any[] }) {
   const statusLabel: Record<string, string> = {
     processed: 'Processado',
-    validated: 'Aguardando link',
+    validated: 'Validação antiga',
     ignored: 'Ignorada',
     received: 'Recebido',
     failed: 'Falhou',
@@ -403,14 +359,13 @@ function RecentDonationsCard({ events }: { events: any[] }) {
                       : event.donorMessage || 'Sem mensagem'}
                   </p>
                   {event.status === 'ignored' && event.errorMessage && (
-                    <p className="text-[10px] text-pixtune-textMuted truncate">{event.errorMessage}</p>
+                    <p className="text-caption text-pixtune-textMuted truncate">{event.errorMessage}</p>
                   )}
                 </div>
                 <div className="text-right flex-shrink-0 ml-2">
                   <p className="text-body-sm font-bold text-pixtune-text">{formatCurrency(event.amountCents)}</p>
                   <Badge
                     variant={event.status === 'processed' ? 'success' : event.status === 'failed' ? 'danger' : 'neutral'}
-                    className="text-[10px]"
                   >
                     {statusLabel[event.status] || event.status}
                   </Badge>

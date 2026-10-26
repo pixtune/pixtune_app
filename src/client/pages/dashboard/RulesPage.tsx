@@ -34,15 +34,15 @@ const priorityPoints = [
       'O streamer não edita, aumenta nem reordena o valor de uma doação para furar a prioridade.',
   },
   {
-    title: 'Sem vídeo, o pedido aguarda link',
+    title: 'Se a faixa não for encontrada no Spotify',
     description:
-      'Uma doação maior sem vídeo do YouTube não interrompe a música atual. Assim que o link é anexado, ela passa a valer a prioridade.',
+      'A doação fica no histórico e não interrompe a música atual. O doador pode usar o nome exato da música ou colar um link do Spotify.',
   },
 ]
 
 const flowSteps = [
   'O doador escreve o nome da música na mensagem do Live Pix.',
-  'O PixTune detecta o pedido, valida a música e busca o vídeo oficial no YouTube.',
+  'O PixTune detecta o pedido, valida a música e busca a faixa oficial no Spotify.',
   'A fila é ordenada pelo valor da doação, não pela ordem de criação.',
   'A maior doação toca; se ela chegar durante outra música, a menor é derrubada.',
 ]
@@ -118,7 +118,7 @@ export function RulesPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-heading-lg font-bold text-pixtune-text">Regras de Doação</h1>
+        <h1 className="text-heading-lg font-bold text-pixtune-text md:text-page-title">Regras de Doação</h1>
         <p className="mt-1 text-body-sm text-pixtune-textSecondary">
           A prioridade por valor é a regra padrão do sistema. Não há palavras-chave, links fixos,
           ações de comando ou ordenação manual.

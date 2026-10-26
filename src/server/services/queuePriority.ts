@@ -40,7 +40,7 @@ export const queueItemInclude = {
 
 export async function findActiveItem(userId: string) {
   return prisma.queueItem.findFirst({
-    where: { userId, status: { in: ['playing', 'paused'] } },
+    where: { userId, provider: 'spotify', status: { in: ['playing', 'paused'] } },
     include: queueItemInclude,
     orderBy: [{ playedAt: 'desc' }, { createdAt: 'desc' }],
   })
@@ -49,7 +49,12 @@ export async function findActiveItem(userId: string) {
 /** Próxima faixa pendente que realmente pode ser reproduzida. */
 export async function findNextPlayable(userId: string) {
   const pending = await prisma.queueItem.findMany({
-    where: { userId, status: 'pending', providerId: { not: null } },
+    where: {
+      userId,
+      provider: 'spotify',
+      status: 'pending',
+      providerId: { not: null },
+    },
     include: queueItemInclude,
   })
 
@@ -59,8 +64,119 @@ export async function findNextPlayable(userId: string) {
 /** Marca a faixa atual como encerrada/pulada. */
 export async function finishCurrent(userId: string, status: 'played' | 'skipped') {
   await prisma.queueItem.updateMany({
-    where: { userId, status: { in: ['playing', 'paused'] } },
+    where: { userId, provider: 'spotify', status: { in: ['playing', 'paused'] } },
     data: { status, playedAt: new Date() },
+  })
+}
+
+export type StartQueueItemResult =
+  | { ok: true; track: any }
+  | {
+      ok: false
+      code: 'NOT_FOUND' | 'NO_SPOTIFY_TRACK' | 'PRIORITY_LOCKED'
+      message: string
+    }
+
+/**
+ * Inicia ou retoma um item específico dentro de uma transação.
+ *
+ * A checagem de prioridade acontece no mesmo transaction da promoção para
+ * evitar que uma doação maior chegue entre a validação e o início da faixa.
+ */
+export async function startQueueItem(
+  userId: string,
+  itemId: string
+): Promise<StartQueueItemResult> {
+  return prisma.$transaction(async (tx) => {
+    const item = await tx.queueItem.findFirst({
+      where: { id: itemId, userId },
+      include: queueItemInclude,
+    })
+
+    if (!item) {
+      return { ok: false, code: 'NOT_FOUND', message: 'Item não encontrado na fila' }
+    }
+    if (item.provider !== 'spotify' || !item.providerId) {
+      return {
+        ok: false,
+        code: 'NO_SPOTIFY_TRACK',
+        message: 'Este item não tem uma faixa do Spotify configurada',
+      }
+    }
+
+    if (item.status === 'playing') {
+      return { ok: true, track: item }
+    }
+
+    if (item.status === 'paused') {
+      const playing = await tx.queueItem.update({
+        where: { id: item.id },
+        data: { status: 'playing', playedAt: new Date() },
+        include: queueItemInclude,
+      })
+      return { ok: true, track: playing }
+    }
+
+    if (item.status !== 'pending') {
+      return {
+        ok: false,
+        code: 'PRIORITY_LOCKED',
+        message: 'Só é possível tocar a música atual ou a próxima da fila.',
+      }
+    }
+
+    const pending = await tx.queueItem.findMany({
+      where: {
+        userId,
+        provider: 'spotify',
+        status: 'pending',
+        providerId: { not: null },
+      },
+      include: queueItemInclude,
+    })
+    const next = pending.sort(compareQueuePriority)[0] ?? null
+
+    if (!next || next.id !== item.id) {
+      return {
+        ok: false,
+        code: 'PRIORITY_LOCKED',
+        message: 'A próxima música é definida pelo maior valor de doação.',
+      }
+    }
+
+    const current = await tx.queueItem.findFirst({
+      where: {
+        userId,
+        provider: 'spotify',
+        status: { in: ['playing', 'paused'] },
+      },
+      include: queueItemInclude,
+      orderBy: [{ playedAt: 'desc' }, { createdAt: 'desc' }],
+    })
+
+    // Valores iguais não derrubam a música atual (FIFO).
+    if (current && donationAmountCents(current) >= donationAmountCents(item)) {
+      return {
+        ok: false,
+        code: 'PRIORITY_LOCKED',
+        message: 'A próxima música é definida pelo maior valor de doação.',
+      }
+    }
+
+    if (current) {
+      await tx.queueItem.update({
+        where: { id: current.id },
+        data: { status: 'skipped', playedAt: new Date() },
+      })
+    }
+
+    const playing = await tx.queueItem.update({
+      where: { id: item.id },
+      data: { status: 'playing', playedAt: new Date() },
+      include: queueItemInclude,
+    })
+
+    return { ok: true, track: playing }
   })
 }
 
@@ -68,11 +184,20 @@ export async function finishCurrent(userId: string, status: 'played' | 'skipped'
 export async function promoteNextPlayable(userId: string) {
   return prisma.$transaction(async (tx) => {
     const pending = await tx.queueItem.findMany({
-      where: { userId, status: 'pending', providerId: { not: null } },
+      where: {
+        userId,
+        provider: 'spotify',
+        status: 'pending',
+        providerId: { not: null },
+      },
       include: queueItemInclude,
     })
     const active = await tx.queueItem.findFirst({
-      where: { userId, status: { in: ['playing', 'paused'] } },
+      where: {
+        userId,
+        provider: 'spotify',
+        status: { in: ['playing', 'paused'] },
+      },
       include: queueItemInclude,
       orderBy: [{ playedAt: 'desc' }, { createdAt: 'desc' }],
     })
@@ -118,7 +243,11 @@ export async function maybeStartItem(
       include: queueItemInclude,
     })
     const current = await tx.queueItem.findFirst({
-      where: { userId, status: { in: ['playing', 'paused'] } },
+      where: {
+        userId,
+        provider: 'spotify',
+        status: { in: ['playing', 'paused'] },
+      },
       include: queueItemInclude,
       orderBy: [{ playedAt: 'desc' }, { createdAt: 'desc' }],
     })
@@ -130,7 +259,7 @@ export async function maybeStartItem(
       hasCurrent: Boolean(current),
       currentAmountCents: current ? donationAmountCents(current) : 0,
       newAmountCents: donationAmountCents(item),
-      playable: Boolean(item.providerId),
+      playable: item.provider === 'spotify' && Boolean(item.providerId),
       autoPlay: settings?.autoPlay ?? true,
       forceWhenIdle: options.forceWhenIdle,
     })
@@ -140,7 +269,11 @@ export async function maybeStartItem(
     if (decision === 'preempt') {
       // "Derruba" a música de menor valor: ela não volta para a fila.
       await tx.queueItem.updateMany({
-        where: { userId, status: { in: ['playing', 'paused'] } },
+        where: {
+          userId,
+          provider: 'spotify',
+          status: { in: ['playing', 'paused'] },
+        },
         data: { status: 'skipped', playedAt: new Date() },
       })
     }

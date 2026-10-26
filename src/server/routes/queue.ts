@@ -11,7 +11,7 @@ import {
   queueItemInclude,
   sortQueueForDisplay,
 } from '../services/queuePriority'
-import { extractYouTubeId, youTubeThumbnailUrl, youTubeWatchUrl } from '../../shared/youtube'
+import { extractSpotifyTrackId, spotifyTrackUrl } from '../../shared/spotify'
 
 const queue = new Hono()
 
@@ -63,7 +63,7 @@ const addSchema = z.object({
   artworkUrl: z.string().optional(),
   durationMs: z.number().optional(),
   sourceUrl: z.string().optional(),
-  provider: z.string().default('demo'),
+  provider: z.string().default('spotify'),
   providerId: z.string().optional(),
   position: z.number().optional(),
 })
@@ -73,28 +73,42 @@ queue.post('/', authMiddleware, zValidator('json', addSchema), async (c) => {
   const { title, artist, album, artworkUrl, durationMs, sourceUrl, provider, providerId, position } =
     c.req.valid('json')
 
-  // Normaliza links/IDs do YouTube para que a faixa seja reproduzível.
+  // Normaliza links/IDs do Spotify para que a faixa seja reproduzível.
   const candidate = providerId || sourceUrl
-  const youtubeId = candidate ? extractYouTubeId(candidate) : null
+  const spotifyId = candidate ? extractSpotifyTrackId(candidate) : null
   let normalizedProvider = provider
   let normalizedProviderId = providerId
   let normalizedSourceUrl = sourceUrl
   let normalizedArtworkUrl = artworkUrl
 
-  if (provider === 'youtube' || youtubeId) {
-    if (!youtubeId) {
+  if (provider === 'spotify' || spotifyId) {
+    if (!spotifyId) {
       return c.json(
         {
           success: false,
-          error: { code: 'INVALID_YOUTUBE_URL', message: 'Informe um link ou ID válido do YouTube' },
+          error: {
+            code: 'INVALID_SPOTIFY_URL',
+            message: 'Informe um link ou ID válido de uma faixa do Spotify',
+          },
         },
         400
       )
     }
-    normalizedProvider = 'youtube'
-    normalizedProviderId = youtubeId
-    normalizedSourceUrl = sourceUrl || youTubeWatchUrl(youtubeId)
-    normalizedArtworkUrl = artworkUrl || youTubeThumbnailUrl(youtubeId)
+    normalizedProvider = 'spotify'
+    normalizedProviderId = spotifyId
+    normalizedSourceUrl = sourceUrl || spotifyTrackUrl(spotifyId)
+    normalizedArtworkUrl = artworkUrl
+  } else if (provider !== 'demo') {
+    return c.json(
+      {
+        success: false,
+        error: {
+          code: 'UNSUPPORTED_PROVIDER',
+          message: 'O PixTune trabalha apenas com faixas do Spotify.',
+        },
+      },
+      400
+    )
   }
 
   const newPosition = position !== undefined ? position : (await prisma.queueItem.count({ where: { userId } }))
@@ -125,9 +139,8 @@ queue.post('/', authMiddleware, zValidator('json', addSchema), async (c) => {
   return c.json({ success: true, data: trackPayload(item) }, 201)
 })
 
-// Anexar/trocar o vídeo do YouTube de um item da fila.
-// Útil para pedidos detectados sem YOUTUBE_API_KEY, que entram como
-// "aguardando link", e para corrigir um link removido.
+// Anexar/trocar a faixa do Spotify de um item da fila.
+// Útil para corrigir um link removido ou um item antigo.
 queue.patch(
   '/:id/link',
   authMiddleware,
@@ -145,12 +158,15 @@ queue.patch(
       )
     }
 
-    const videoId = extractYouTubeId(url)
-    if (!videoId) {
+    const spotifyId = extractSpotifyTrackId(url)
+    if (!spotifyId) {
       return c.json(
         {
           success: false,
-          error: { code: 'INVALID_YOUTUBE_URL', message: 'Informe um link ou ID válido do YouTube' },
+          error: {
+            code: 'INVALID_SPOTIFY_URL',
+            message: 'Informe um link ou ID válido de uma faixa do Spotify',
+          },
         },
         400
       )
@@ -159,10 +175,11 @@ queue.patch(
     const updated = await prisma.queueItem.update({
       where: { id },
       data: {
-        provider: 'youtube',
-        providerId: videoId,
-        sourceUrl: youTubeWatchUrl(videoId),
-        artworkUrl: item.artworkUrl || youTubeThumbnailUrl(videoId),
+        provider: 'spotify',
+        providerId: spotifyId,
+        sourceUrl: spotifyTrackUrl(spotifyId),
+        // A capa antiga pode ser de outro provedor; evita exibir arte errada.
+        artworkUrl: null,
       },
       include: queueItemInclude,
     })
@@ -271,7 +288,7 @@ queue.post('/shuffle', authMiddleware, async (c) => {
   const userId = getUserId(c)
 
   const items = await prisma.queueItem.findMany({
-    where: { userId, status: 'pending', donationEventId: null },
+    where: { userId, provider: 'spotify', status: 'pending', donationEventId: null },
     orderBy: { position: 'asc' },
   })
 
@@ -317,7 +334,13 @@ queue.post('/previous', authMiddleware, async (c) => {
   // Enquanto houver doações pendentes, voltar poderia furar a prioridade
   // por valor. O streamer deve usar "Pular próxima" para seguir a fila.
   const pendingDonation = await prisma.queueItem.count({
-    where: { userId, status: 'pending', donationEventId: { not: null } },
+    where: {
+      userId,
+      provider: 'spotify',
+      status: 'pending',
+      providerId: { not: null },
+      donationEventId: { not: null },
+    },
   })
   if (pendingDonation > 0) {
     return c.json(
@@ -334,7 +357,13 @@ queue.post('/previous', authMiddleware, async (c) => {
 
   // Buscar última faixa tocada ou pulada
   const lastPlayed = await prisma.queueItem.findFirst({
-    where: { userId, status: { in: ['played', 'skipped'] }, playedAt: { not: null } },
+    where: {
+      userId,
+      provider: 'spotify',
+      providerId: { not: null },
+      status: { in: ['played', 'skipped'] },
+      playedAt: { not: null },
+    },
     include: queueItemInclude,
     orderBy: { playedAt: 'desc' },
   })
@@ -360,7 +389,7 @@ queue.post('/previous', authMiddleware, async (c) => {
 
   // Marcar atual como pending (se houver)
   await prisma.queueItem.updateMany({
-    where: { userId, status: { in: ['playing', 'paused'] } },
+    where: { userId, provider: 'spotify', status: { in: ['playing', 'paused'] } },
     data: { status: 'pending', playedAt: null },
   })
 

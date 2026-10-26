@@ -9,10 +9,15 @@ import {
   LogOut,
   User,
   ChevronLeft,
+  AlertCircle,
+  CheckCircle2,
+  CircleOff,
+  Loader2,
+  type LucideIcon,
 } from 'lucide-react'
 import { useAuth } from '@client/contexts/AuthContext'
 import { Button } from '@client/components/ui/Button'
-import { YouTubeAudioProvider, useAudioPlayer } from '@client/player/YouTubeAudioPlayer'
+import { SpotifyAudioProvider, useAudioPlayer } from '@client/player/SpotifyAudioPlayer'
 import { cn } from '@shared/utils'
 import { apiDonations } from '@client/api/client'
 
@@ -26,9 +31,9 @@ const navigation = [
 
 export function AppLayout() {
   return (
-    <YouTubeAudioProvider>
+    <SpotifyAudioProvider>
       <AppLayoutContent />
-    </YouTubeAudioProvider>
+    </SpotifyAudioProvider>
   )
 }
 
@@ -182,42 +187,77 @@ function AppLayoutContent() {
   )
 }
 
+type ConnectionState = 'connected' | 'connecting' | 'error' | 'disconnected'
+
+/**
+ * O estado nunca depende só da cor: cada indicador mostra um ícone e um texto
+ * com o nome do serviço, inclusive no celular.
+ */
+const CONNECTION_STATES: Record<
+  ConnectionState,
+  { label: string; icon: LucideIcon; color: string; spin?: boolean }
+> = {
+  connected: { label: 'Conectado', icon: CheckCircle2, color: 'text-pixtune-success' },
+  connecting: { label: 'Conectando', icon: Loader2, color: 'text-pixtune-warning', spin: true },
+  error: { label: 'Erro', icon: AlertCircle, color: 'text-pixtune-danger' },
+  disconnected: { label: 'Desconectado', icon: CircleOff, color: 'text-pixtune-textMuted' },
+}
+
 function ConnectionIndicators() {
   const { livepixStatus } = useConnectionStatus()
   const { isReady, error } = useAudioPlayer()
-  const musicStatus = error ? 'error' : isReady ? 'connected' : 'connecting'
-
-  const getStatusConfig = (status: string) => {
-    switch (status) {
-      case 'connected':
-        return { color: 'text-pixtune-success', label: 'Conectado', dot: 'bg-pixtune-success' }
-      case 'connecting':
-        return { color: 'text-pixtune-warning', label: 'Conectando...', dot: 'bg-pixtune-warning animate-pulse' }
-      case 'error':
-        return { color: 'text-pixtune-danger', label: 'Erro', dot: 'bg-pixtune-danger' }
-      default:
-        return { color: 'text-pixtune-textMuted', label: 'Desconectado', dot: 'bg-pixtune-textMuted' }
-    }
-  }
-
-  const livepixConfig = getStatusConfig(livepixStatus)
-  const musicConfig = getStatusConfig(musicStatus)
+  const needsSpotifyConnection = Boolean(
+    error && /conecte sua conta|não configurado no servidor/i.test(error)
+  )
+  const musicStatus: ConnectionState = error
+    ? needsSpotifyConnection
+      ? 'disconnected'
+      : 'error'
+    : isReady
+      ? 'connected'
+      : 'connecting'
 
   return (
-    <div className="flex items-center gap-4" role="status" aria-live="polite">
-      <div className="flex items-center gap-1.5" title="Live Pix">
-        <span className={`${livepixConfig.dot} w-2 h-2 rounded-full`} aria-hidden="true" />
-        <span className={`text-caption font-medium ${livepixConfig.color} hidden sm:inline`}>
-          {livepixConfig.label}
-        </span>
-      </div>
-      <div className="flex items-center gap-1.5" title="Player Musical">
-        <span className={`${musicConfig.dot} w-2 h-2 rounded-full`} aria-hidden="true" />
-        <span className={`text-caption font-medium ${musicConfig.color} hidden sm:inline`}>
-          {musicConfig.label}
-        </span>
-      </div>
+    <div
+      className="flex flex-col items-end gap-0.5 sm:flex-row sm:items-center sm:gap-4"
+      role="status"
+      aria-live="polite"
+    >
+      <ConnectionIndicator service="Live Pix" status={livepixStatus} />
+      <ConnectionIndicator
+        service="Player"
+        status={musicStatus}
+        detail={error ?? undefined}
+      />
     </div>
+  )
+}
+
+function ConnectionIndicator({
+  service,
+  status,
+  detail,
+}: {
+  service: string
+  status: ConnectionState
+  detail?: string
+}) {
+  const state = CONNECTION_STATES[status] ?? CONNECTION_STATES.disconnected
+  const Icon = state.icon
+
+  return (
+    <span
+      className="flex items-center gap-1.5 whitespace-nowrap"
+      title={`${service}: ${state.label}${detail ? ` — ${detail}` : ''}`}
+    >
+      <Icon
+        className={cn('h-4 w-4 flex-shrink-0', state.color, state.spin && 'animate-spin')}
+        aria-hidden="true"
+      />
+      <span className="text-caption font-medium text-pixtune-textMuted">
+        {service} <span className={state.color}>{state.label}</span>
+      </span>
+    </span>
   )
 }
 

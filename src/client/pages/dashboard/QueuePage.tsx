@@ -6,27 +6,32 @@ import {
   Pause,
   Plus,
   Trash2,
-  Clock,
+  ArrowLeft,
   Music as MusicIcon,
   Loader2,
   ExternalLink,
   AlertCircle,
-  Youtube,
+  Search,
+  Link2,
   Trophy,
 } from 'lucide-react'
 import { Button } from '@client/components/ui/Button'
 import { Card } from '@client/components/ui/Card'
 import { Badge } from '@client/components/ui/Badge'
 import { Input } from '@client/components/ui/Input'
-import { apiQueue, apiMusic, type QueueItem } from '@client/api/client'
-import { useAudioPlayer } from '@client/player/YouTubeAudioPlayer'
+import { apiQueue, apiSpotify, type QueueItem, type SpotifyTrack } from '@client/api/client'
+import { useAudioPlayer } from '@client/player/SpotifyAudioPlayer'
+import { findSpotifyTrackIdInText } from '@shared/spotify'
 import { formatCurrency, formatDuration } from '@shared/utils'
+
+const YOUTUBE_LINK_PATTERN = /(?:https?:\/\/)?(?:www\.|m\.|music\.)?(?:youtube\.com|youtu\.be)\//i
 
 export function QueuePage() {
   const [queue, setQueue] = useState<QueueItem[]>([])
   const [loading, setLoading] = useState(true)
-  const [youtubeUrl, setYoutubeUrl] = useState('')
-  const [trackTitle, setTrackTitle] = useState('')
+  const [spotifyInput, setSpotifyInput] = useState('')
+  const [searchResults, setSearchResults] = useState<SpotifyTrack[]>([])
+  const [searching, setSearching] = useState(false)
   const [adding, setAdding] = useState(false)
   const [addError, setAddError] = useState<string | null>(null)
 
@@ -44,46 +49,93 @@ export function QueuePage() {
     setLoading(false)
   }
 
-  async function handleAddTrack(e: React.FormEvent) {
-    e.preventDefault()
-    const url = youtubeUrl.trim()
-
-    if (!url) {
-      setAddError('Cole um link do YouTube para adicionar uma música.')
-      return
-    }
-
+  async function addSpotifyTrack(track: SpotifyTrack) {
     setAdding(true)
     setAddError(null)
 
     try {
-      const resolved = await apiMusic.resolve(url)
-      if (!resolved.success || !resolved.data) {
-        setAddError(resolved.error?.message || 'Não foi possível identificar o vídeo do YouTube.')
+      const res = await apiQueue.add({
+        title: track.title,
+        artist: track.artist,
+        album: track.album,
+        artworkUrl: track.artworkUrl,
+        durationMs: track.durationMs,
+        sourceUrl: track.sourceUrl,
+        provider: 'spotify',
+        providerId: track.id,
+      })
+
+      if (!res.success) {
+        setAddError(res.error?.message || 'Erro ao adicionar à fila.')
         return
       }
 
-      const video = resolved.data
-      const res = await apiQueue.add({
-        title: trackTitle.trim() || video.title,
-        artist: video.artist,
-        artworkUrl: video.artworkUrl,
-        sourceUrl: video.sourceUrl,
-        provider: 'youtube',
-        providerId: video.videoId,
-      })
-
-      if (res.success) {
-        setYoutubeUrl('')
-        setTrackTitle('')
-        await loadQueue()
-      } else {
-        setAddError(res.error?.message || 'Erro ao adicionar à fila.')
-      }
+      setSpotifyInput('')
+      setSearchResults([])
+      await loadQueue()
     } catch (err) {
       setAddError(err instanceof Error ? err.message : 'Erro ao adicionar à fila.')
     } finally {
       setAdding(false)
+    }
+  }
+
+  async function handleAddTrack(e: React.FormEvent) {
+    e.preventDefault()
+    const value = spotifyInput.trim()
+
+    if (!value) {
+      setAddError('Cole um link do Spotify ou digite o nome da música.')
+      return
+    }
+
+    setAddError(null)
+    setSearchResults([])
+
+    // Link/URI/ID do Spotify: resolve direto e adiciona. O link do Spotify
+    // tem precedência mesmo quando a mensagem também contém outro link.
+    const spotifyTrackId = findSpotifyTrackIdInText(value)
+    if (spotifyTrackId) {
+      setAdding(true)
+      try {
+        const resolved = await apiSpotify.resolve(spotifyTrackId)
+        if (!resolved.success || !resolved.data) {
+          setAddError(resolved.error?.message || 'Não foi possível identificar a faixa do Spotify.')
+          return
+        }
+        await addSpotifyTrack(resolved.data)
+      } catch (err) {
+        setAddError(err instanceof Error ? err.message : 'Erro ao adicionar à fila.')
+      } finally {
+        setAdding(false)
+      }
+      return
+    }
+
+    if (YOUTUBE_LINK_PATTERN.test(value)) {
+      setAddError('Links do YouTube não são aceitos. Use o nome da música ou um link do Spotify.')
+      return
+    }
+
+    // Nome da música: busca oficial do Spotify e mostra os resultados.
+    setSearching(true)
+    try {
+      const result = await apiSpotify.search(value)
+      if (!result.success || !result.data) {
+        setAddError(result.error?.message || 'Não foi possível buscar no Spotify.')
+        return
+      }
+
+      if (result.data.tracks.length === 0) {
+        setAddError('Nenhuma faixa encontrada no Spotify. Tente outro nome ou cole um link.')
+        return
+      }
+
+      setSearchResults(result.data.tracks)
+    } catch (err) {
+      setAddError(err instanceof Error ? err.message : 'Não foi possível buscar no Spotify.')
+    } finally {
+      setSearching(false)
     }
   }
 
@@ -109,10 +161,8 @@ export function QueuePage() {
 
   async function handleAttachLink(track: QueueItem) {
     const url = window.prompt(
-      `Cole o link do YouTube para "${track.title}":`,
-      track.sourceUrl?.startsWith('https://www.youtube.com/results')
-        ? ''
-        : track.sourceUrl || ''
+      `Cole o link do Spotify para "${track.title}":`,
+      track.sourceUrl?.startsWith('https://open.spotify.com/') ? track.sourceUrl : ''
     )
     if (!url?.trim()) return
 
@@ -145,32 +195,36 @@ export function QueuePage() {
     )
   }
 
-  const pendingCount = queue.filter((track) => track.status === 'pending').length
+  const pendingCount = queue.filter(
+    (track) =>
+      track.status === 'pending' && track.provider === 'spotify' && Boolean(track.providerId)
+  ).length
   const historyCount = queue.filter(
     (track) => track.status === 'played' || track.status === 'skipped' || track.status === 'failed'
   ).length
   const hasActiveTrack =
     Boolean(currentTrack) ||
     queue.some((track) => track.status === 'playing' || track.status === 'paused')
-  // A fila já chega ordenada pelo backend: o primeiro pendente com vídeo é
-  // exatamente a próxima música que o servidor vai promover.
+  // A fila já chega ordenada pelo backend: o primeiro pendente com faixa do
+  // Spotify é exatamente a próxima música que o servidor vai promover.
   const priorityPendingId = queue.find(
-    (track) => track.status === 'pending' && track.providerId
+    (track) =>
+      track.status === 'pending' && track.provider === 'spotify' && Boolean(track.providerId)
   )?.id
 
   return (
     <div className="space-y-8">
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
         <div>
-          <h1 className="text-heading-lg font-bold text-pixtune-text">Fila de Reprodução</h1>
+          <h1 className="text-heading-lg font-bold text-pixtune-text md:text-page-title">Fila de Reprodução</h1>
           <p className="text-body-sm text-pixtune-textSecondary">
             A maior doação toca primeiro e interrompe a música atual de menor valor. A ordem por
             valor é imutável; você só define o valor mínimo nas configurações.
           </p>
         </div>
-        <Link to="/dashboard">
-          <Button variant="ghost">
-            <Clock className="w-4 h-4 mr-2" /> Voltar ao dashboard
+        <Link to="/dashboard" className="w-fit flex-shrink-0">
+          <Button variant="ghost" className="whitespace-nowrap">
+            <ArrowLeft className="w-4 h-4 mr-2" /> Voltar ao dashboard
           </Button>
         </Link>
       </div>
@@ -180,9 +234,7 @@ export function QueuePage() {
         <div>
           <h2 className="text-body-sm font-medium text-pixtune-text">Prioridade por valor</h2>
           <p className="mt-1 text-body-sm text-pixtune-textSecondary">
-            Se uma doação maior chegar enquanto outra música toca, a menor é derrubada na hora e a
-            maior começa imediatamente. Em valores iguais, vale a ordem de chegada. O valor de cada
-            doação é fixo e não pode ser alterado pelo streamer.
+            Em valores iguais, vale a ordem de chegada. O valor de cada doação é fixo.
           </p>
         </div>
       </div>
@@ -190,34 +242,44 @@ export function QueuePage() {
       <Card className="p-6">
         <form onSubmit={handleAddTrack} className="space-y-4">
           <div className="grid grid-cols-1 gap-4 md:grid-cols-12">
-            <div className="flex flex-col gap-2 md:col-span-6">
-              <label htmlFor="youtubeUrl" className="text-body-sm font-medium text-pixtune-textSecondary">
-                Link do YouTube <span className="text-pixtune-primary">*</span>
+            <div className="flex flex-col gap-2 md:col-span-10">
+              <label htmlFor="spotifyInput" className="text-body-sm font-medium text-pixtune-textSecondary">
+                Música no Spotify <span className="text-pixtune-primary">*</span>
               </label>
               <Input
-                id="youtubeUrl"
-                value={youtubeUrl}
-                onChange={(e) => setYoutubeUrl(e.target.value)}
-                placeholder="https://www.youtube.com/watch?v=..."
+                id="spotifyInput"
+                value={spotifyInput}
+                onChange={(e) => {
+                  setSpotifyInput(e.target.value)
+                  setSearchResults([])
+                  setAddError(null)
+                }}
+                placeholder="https://open.spotify.com/track/... ou nome da música"
                 required
-                helperText="O vídeo não será exibido; o player reproduz apenas o áudio."
-              />
-            </div>
-            <div className="flex flex-col gap-2 md:col-span-4">
-              <label htmlFor="trackTitle" className="text-body-sm font-medium text-pixtune-textSecondary">
-                Título (opcional)
-              </label>
-              <Input
-                id="trackTitle"
-                value={trackTitle}
-                onChange={(e) => setTrackTitle(e.target.value)}
-                placeholder="Preenchido automaticamente"
+                helperText="Cole um link ou digite o nome. A busca e a reprodução usam as APIs oficiais do Spotify."
               />
             </div>
             <div className="flex items-end md:col-span-2">
-              <Button type="submit" variant="primary" className="w-full" disabled={adding}>
-                {adding ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Plus className="w-4 h-4 mr-2" />}
-                {adding ? 'Adicionando' : 'Adicionar'}
+              <Button
+                type="submit"
+                variant="primary"
+                className="w-full"
+                disabled={adding || searching}
+              >
+                {adding || searching ? (
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                ) : findSpotifyTrackIdInText(spotifyInput.trim()) ? (
+                  <Plus className="w-4 h-4 mr-2" />
+                ) : (
+                  <Search className="w-4 h-4 mr-2" />
+                )}
+                {adding
+                  ? 'Adicionando'
+                  : searching
+                    ? 'Buscando'
+                    : findSpotifyTrackIdInText(spotifyInput.trim())
+                      ? 'Adicionar'
+                      : 'Buscar'}
               </Button>
             </div>
           </div>
@@ -229,6 +291,44 @@ export function QueuePage() {
             </p>
           )}
         </form>
+
+        {searchResults.length > 0 && (
+          <div className="mt-5 border-t border-pixtune-border pt-5">
+            <p className="mb-3 text-body-sm font-medium text-pixtune-text">Escolha a faixa</p>
+            <div className="space-y-2">
+              {searchResults.map((result) => (
+                <div
+                  key={result.id}
+                  className="flex items-center gap-3 rounded-lg border border-pixtune-border bg-pixtune-surfaceElevated/40 p-3"
+                >
+                  <div className="flex h-11 w-11 flex-shrink-0 items-center justify-center overflow-hidden rounded-lg bg-pixtune-surfaceElevated">
+                    {result.artworkUrl ? (
+                      <img src={result.artworkUrl} alt="" className="h-full w-full object-cover" />
+                    ) : (
+                      <MusicIcon className="h-5 w-5 text-pixtune-textMuted" />
+                    )}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-body-sm font-medium text-pixtune-text">{result.title}</p>
+                    <p className="truncate text-caption text-pixtune-textSecondary">
+                      {result.artist}
+                      {result.album ? ` • ${result.album}` : ''}
+                    </p>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void addSpotifyTrack(result)}
+                    disabled={adding}
+                  >
+                    <Plus className="h-4 w-4 sm:mr-2" />
+                    <span className="hidden sm:inline">Adicionar</span>
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </Card>
 
       {playerError && (
@@ -258,7 +358,7 @@ export function QueuePage() {
           <div className="p-8 text-center">
             <ListMusic className="w-12 h-12 text-pixtune-textMuted mx-auto mb-4" />
             <p className="text-pixtune-textSecondary">A fila está vazia</p>
-            <p className="text-caption text-pixtune-textMuted mt-2">As doações com nome de música caem aqui automaticamente. Você também pode adicionar links do YouTube acima.</p>
+            <p className="text-caption text-pixtune-textMuted mt-2">As doações com nome de música caem aqui automaticamente. Você também pode buscar faixas ou colar links do Spotify acima.</p>
           </div>
         ) : (
           <div className="divide-y divide-pixtune-border">
@@ -270,6 +370,7 @@ export function QueuePage() {
               const isPriorityPending =
                 track.status === 'pending' && track.id === priorityPendingId
               const canPlay =
+                track.provider === 'spotify' &&
                 Boolean(track.providerId) &&
                 (isCurrent || (!hasActiveTrack && isPriorityPending))
               const statusLabel =
@@ -281,8 +382,9 @@ export function QueuePage() {
                       ? 'Tocada'
                       : track.status === 'skipped'
                         ? 'Pulada'
-                        : track.status === 'pending' && !track.providerId
-                          ? 'Aguardando link'
+                        : track.status === 'pending' &&
+                            (track.provider !== 'spotify' || !track.providerId)
+                          ? 'Aguardando Spotify'
                           : isPriorityPending
                             ? 'Próxima'
                             : null
@@ -290,48 +392,58 @@ export function QueuePage() {
               return (
                 <div
                   key={track.id}
-                  className={`flex items-center gap-4 p-4 transition-colors group ${isCurrent ? 'bg-pixtune-primaryMuted/40' : 'hover:bg-pixtune-surfaceElevated/50'}`}
+                  aria-current={isCurrent ? 'true' : undefined}
+                  className={`flex items-center gap-4 border-l-[3px] p-4 pl-[13px] transition-colors group ${
+                    isCurrent
+                      ? 'border-l-pixtune-primary bg-pixtune-surfaceElevated'
+                      : 'border-l-transparent hover:bg-pixtune-surfaceElevated/50'
+                  }`}
                 >
-                  <div className="w-8 h-8 rounded-lg flex items-center justify-center text-caption font-bold bg-pixtune-surfaceElevated">
+                  <div className="hidden h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-pixtune-surfaceElevated text-caption font-bold sm:flex">
                     {index + 1}
                   </div>
-                  <div className="w-12 h-12 rounded-lg bg-pixtune-surfaceElevated border border-pixtune-border flex-shrink-0 relative overflow-hidden flex items-center justify-center">
-                    {track.artworkUrl ? (
+                  <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center overflow-hidden rounded-lg border border-pixtune-border bg-pixtune-surfaceElevated sm:h-12 sm:w-12">
+                    {track.provider === 'spotify' && track.providerId && track.artworkUrl ? (
                       <img src={track.artworkUrl} alt="" className="w-full h-full object-cover" />
                     ) : (
-                      <MusicIcon className="w-6 h-6 text-pixtune-textMuted" />
+                      <MusicIcon className="h-5 w-5 text-pixtune-textMuted sm:h-6 sm:w-6" />
                     )}
                   </div>
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <p className="text-body-sm font-medium text-pixtune-text truncate">{track.title}</p>
+                    <p className="text-body-sm font-medium text-pixtune-text truncate">{track.title}</p>
+                    <p className="text-caption text-pixtune-textSecondary truncate">{track.artist || 'Artista desconhecido'}</p>
+                    <div className="flex flex-wrap items-center gap-2 mt-1">
                       {statusLabel && (
-                        <Badge variant={track.status === 'playing' ? 'success' : 'neutral'} className="text-[10px]">
+                        <Badge variant={track.status === 'playing' ? 'success' : 'neutral'}>
                           {statusLabel}
                         </Badge>
                       )}
-                    </div>
-                    <p className="text-caption text-pixtune-textSecondary truncate">{track.artist || 'Artista desconhecido'}</p>
-                    <div className="flex flex-wrap items-center gap-2 mt-1">
-                      <Badge variant={track.provider === 'youtube' ? 'info' : 'default'} className="text-[10px]">
-                        {track.provider === 'youtube' ? 'YouTube' : track.provider}
+                      <Badge
+                        variant={
+                          track.provider === 'spotify' && track.providerId ? 'info' : 'default'
+                        }
+                      >
+                        {track.provider === 'spotify' && track.providerId
+                          ? 'Spotify'
+                          : 'Item legado'}
                       </Badge>
-                      <Badge variant={track.addedBy === 'donation' ? 'success' : 'neutral'} className="text-[10px]">
-                        {track.addedBy === 'donation' ? 'Doação' : 'Manual'}
+                      <Badge variant={track.addedBy === 'donation' ? 'success' : 'neutral'}>
+                        {track.addedBy === 'donation'
+                          ? 'Doação'
+                          : track.addedBy === 'playlist'
+                            ? 'Playlist'
+                            : 'Manual'}
                       </Badge>
                       {track.amountCents > 0 && (
-                        <Badge variant="success" className="text-[10px]">
+                        <Badge variant="success">
                           <Trophy className="mr-1 h-3 w-3" aria-hidden="true" />
                           {formatCurrency(track.amountCents)}
                         </Badge>
                       )}
                       {track.donorName && (
-                        <span className="text-[10px] text-pixtune-textMuted">
+                        <span className="text-caption text-pixtune-textMuted">
                           {track.donorName}
                         </span>
-                      )}
-                      {!track.providerId && (
-                        <span className="text-[10px] text-pixtune-warning">Sem vídeo do YouTube</span>
                       )}
                     </div>
                   </div>
@@ -339,31 +451,27 @@ export function QueuePage() {
                     <p className="text-caption text-pixtune-textMuted font-mono">{track.durationMs ? formatDuration(track.durationMs) : '--:--'}</p>
                   </div>
                   <div className="flex flex-shrink-0 items-center gap-1 sm:gap-2">
-                    {track.sourceUrl && (
+                    {track.provider === 'spotify' && track.sourceUrl && (
                       <a
                         href={track.sourceUrl}
                         target="_blank"
                         rel="noreferrer"
                         className="p-2 rounded-lg text-pixtune-textMuted hover:text-pixtune-primary hover:bg-pixtune-surfaceElevated transition-colors"
-                        aria-label={
-                          canPlay
-                            ? `Abrir ${track.title} no YouTube`
-                            : `Buscar ${track.title} no YouTube`
-                        }
+                        aria-label={`Abrir ${track.title} no Spotify`}
                       >
                         <ExternalLink className="w-4 h-4" />
                       </a>
                     )}
-                    {!track.providerId && (
+                    {(!track.providerId || track.provider !== 'spotify') && (
                       <Button
                         variant="outline"
                         size="sm"
                         onClick={() => void handleAttachLink(track)}
-                        aria-label={`Anexar link do YouTube para ${track.title}`}
-                        title="Anexar um link do YouTube a este pedido"
+                        aria-label={`Anexar link do Spotify para ${track.title}`}
+                        title="Anexar um link do Spotify a este pedido"
                       >
-                        <Youtube className="w-4 h-4 sm:mr-2" />
-                        <span className="hidden sm:inline">Anexar link</span>
+                        <Link2 className="w-4 h-4 sm:mr-2" />
+                        <span className="hidden sm:inline">Anexar Spotify</span>
                       </Button>
                     )}
                     <Button
@@ -373,8 +481,8 @@ export function QueuePage() {
                       disabled={!canPlay}
                       aria-label={isCurrent && isPlaying ? `Pausar ${track.title}` : `Tocar ${track.title}`}
                       title={
-                        !track.providerId
-                          ? 'Adicione um link do YouTube a este item'
+                        track.provider !== 'spotify' || !track.providerId
+                          ? 'Adicione um link do Spotify a este item'
                           : track.status === 'pending' && (hasActiveTrack || !isPriorityPending)
                             ? 'Aguarde a vez: a maior doação toca primeiro'
                             : track.status === 'played' || track.status === 'skipped'
@@ -407,9 +515,6 @@ export function QueuePage() {
             <Button variant="ghost" size="sm" onClick={handleNext} disabled={pendingCount === 0}>
               <Play className="w-4 h-4 mr-2" /> Pular próxima
             </Button>
-            <span className="text-caption text-pixtune-textMuted">
-              A ordem das doações é definida pelo valor e não pode ser embaralhada.
-            </span>
           </div>
           <Button variant="danger" size="sm" onClick={handleClear} disabled={queue.length === 0}>
             Limpar tudo

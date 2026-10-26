@@ -54,7 +54,7 @@ model Settings {
   livepixRefreshToken   String?
   livepixTokenExpiresAt DateTime?
   // Music Provider
-  musicProvider         String   @default("youtube") // demo, youtube, spotify
+  musicProvider         String   @default("spotify") // spotify
   musicConnected        Boolean  @default(false)
   musicAccessToken      String?
   musicRefreshToken     String?
