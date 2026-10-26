@@ -186,7 +186,7 @@ src/
     ├── middleware/auth.ts   # JWT + sessão + isolamento por userId
     ├── routes/              # auth, donations, queue, music, settings, rules, spotify
     └── services/            # auth, googleOAuth, livepix, rules, spotify, spotifySongRequest
-prisma/schema.prisma         # User, Session, Settings, Integration, DonationEvent, DonationRule, QueueItem...
+ prisma/schema.prisma         # User, Session, Settings, Integration, DonationEvent, DonationRule, QueueItem...
 ```
 
 ---

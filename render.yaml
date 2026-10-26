@@ -1,0 +1,39 @@
+# PixTune Backend + Frontend — Web Service (Deploy manual via Render dashboard)
+# Full-stack: frontend estático servido por nginx no dist/client, backend rodando no render:deploy
+services:
+  # ─── Backend API ───
+  - type: render:deploy
+    name: pixtune-api
+    builds:
+      - command: "npm install && npx prisma generate && npm run build:server"
+        timeout: 300
+        cache:
+          key: pixtune
+          paths:
+            - node_modules/
+    healthCheckPath: /health
+    healthCheckMethod: GET
+    startCommand: "node dist/server/main.js"
+    secrets:
+      - DATABASE_URL
+      - JWT_SECRET
+      - SPOTIFY_CLIENT_ID
+      - SPOTIFY_CLIENT_SECRET
+    environmentVariables:
+      - key: NODE_ENV
+        sync: true
+        value: production
+      - key: APP_URL
+        sync: true
+        value: https://pixtune-app.pages.dev
+      - key: API_URL
+        sync: true
+        value: https://pixtune-api.onrender.com/api
+      - key: CORS_ORIGINS
+        sync: true
+        value: https://pixtune-app.pages.dev
+  # ─── Frontend ───
+  - type: render:build
+    name: pixtune-frontend
+    buildCommand: "npm run build:client"
+    startCommand: "http-server dist/client -p 3001 --silent -c-1"
