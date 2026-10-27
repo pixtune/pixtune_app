@@ -4,7 +4,7 @@ import {
   findYouTubeIdInText,
   normalizeYouTubeTrack,
   youTubeWatchUrl,
-} from './youtube'
+} from './youtube.js'
 
 describe('extractYouTubeId', () => {
   it('aceita ID puro', () => {

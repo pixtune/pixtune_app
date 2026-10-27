@@ -51,9 +51,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  const spotifyLogin = useCallback(() => {
-    // Chama a função exportada do client para redirecionar para o OAuth do Spotify.
-    window.dispatchEvent(new CustomEvent('pixtune:spotify-login'))
+  const spotifyLogin = useCallback(async () => {
+    setAuthError(null)
+    try {
+      const res = await apiAuth.connectUrl()
+      if (res.success && res.data?.url) {
+        window.location.href = res.data.url
+        return
+      }
+      setAuthError(res.error?.message || 'Não foi possível iniciar a conexão com o Spotify.')
+    } catch (err) {
+      setAuthError(
+        err instanceof Error ? err.message : 'Não foi possível iniciar a conexão com o Spotify.'
+      )
+    }
   }, [])
 
   const logout = useCallback(async () => {

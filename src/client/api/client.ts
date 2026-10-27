@@ -79,7 +79,7 @@ export const apiAuth = {
       method: 'POST',
     }),
 
-  /** Recupera o usuário da sessão atual (exigido header Authorization Bearer). */
+  /** Recupera o usuário da sessão atual (cookie HttpOnly ou Authorization Bearer). */
   me: () => request<{ user: SpotifyUser }>('/api/auth/me'),
 
   /** Encerra a sessão. */

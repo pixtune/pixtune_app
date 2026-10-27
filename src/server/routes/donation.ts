@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
-import { authMiddleware, getUserId } from '../middleware/auth'
+import { authMiddleware, getUserId } from '../middleware/auth.js'
 import {
   processWebhookEvent,
   getLivePixConfig,
@@ -11,19 +11,19 @@ import {
   getOrCreateWebhookToken,
   findUserIdByWebhookToken,
   LivePixService,
-} from '../services/livepix'
-import prisma from '../lib/prisma'
+} from '../services/livepix.js'
+import prisma from '../lib/prisma.js'
 import {
   detectSpotifySongRequest,
   spotifySongRequestReasonMessage,
   type DetectedSpotifySong,
   type SpotifySongRequestReason,
-} from '../services/spotifySongRequest'
-import { parseSongRequest } from '../services/songRequest'
-import { getSongRequestSettings } from '../services/songRequestSettings'
-import { maybeStartItem } from '../services/queuePriority'
-import { getSpotifyAccessToken, SpotifyError } from '../services/spotify'
-import { findSpotifyTrackIdInText, spotifyTrackUrl } from '../../shared/spotify'
+} from '../services/spotifySongRequest.js'
+import { parseSongRequest } from '../services/songRequest.js'
+import { getSongRequestSettings } from '../services/songRequestSettings.js'
+import { maybeStartItem } from '../services/queuePriority.js'
+import { getSpotifyAccessToken, SpotifyError } from '../services/spotify.js'
+import { findSpotifyTrackIdInText, spotifyTrackUrl } from '../../shared/spotify.js'
 
 const donations = new Hono()
 

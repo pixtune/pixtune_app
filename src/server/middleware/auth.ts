@@ -8,8 +8,11 @@
  * 4. Isolamento de dados por userId
  */
 
+import { getCookie } from 'hono/cookie'
 import { HTTPException } from 'hono/http-exception'
-import { verifyToken, validateSession } from '../services/auth'
+import { validateSession } from '../services/auth.js'
+
+const SESSION_COOKIE = 'pixtune_token'
 
 interface ContextVariables {
   user: {
@@ -20,19 +23,14 @@ interface ContextVariables {
 
 export async function authMiddleware(c: any, next: any) {
   const authHeader = c.req.header('authorization')
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+  const bearer = authHeader?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim()
+  const token = bearer || getCookie(c, SESSION_COOKIE)
+
+  if (!token) {
     throw new HTTPException(401, { message: 'Token de autenticação não fornecido' })
   }
 
-  const token = authHeader.substring(7)
-
-  // Validar JWT
-  const payload = verifyToken(token)
-  if (!payload) {
-    throw new HTTPException(401, { message: 'Token inválido ou expirado' })
-  }
-
-  // Validar sessão no banco
+  // Valida o JWT e a sessão persistida no banco.
   const sessionUser = await validateSession(token)
   if (!sessionUser) {
     throw new HTTPException(401, { message: 'Sessão inválida ou expirada' })
@@ -40,7 +38,7 @@ export async function authMiddleware(c: any, next: any) {
 
   c.set('user', {
     userId: sessionUser.id,
-    email: sessionUser.email,
+    email: sessionUser.email ?? '',
   })
 
   return next()

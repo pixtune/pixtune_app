@@ -10,8 +10,8 @@ import crypto from 'crypto'
 import JWT from 'jsonwebtoken'
 import { Hono } from 'hono'
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
-import { authMiddleware, getUserId } from '../middleware/auth'
-import prisma from '../lib/prisma'
+import { authMiddleware, getUserId } from '../middleware/auth.js'
+import prisma from '../lib/prisma.js'
 import {
   SPOTIFY_SCOPES,
   buildSpotifyAuthUrl,
@@ -24,11 +24,11 @@ import {
   getSpotifyConfig,
   isSpotifyConfigured,
   searchSpotifyTracks,
-  spotifyRedirectUri,
+  spotifyConnectRedirectUri,
   SpotifyError,
   type SpotifyProfile,
-} from '../services/spotify'
-import { extractSpotifyPlaylistId, extractSpotifyTrackId } from '../../shared/spotify'
+} from '../services/spotify.js'
+import { extractSpotifyPlaylistId, extractSpotifyTrackId } from '../../shared/spotify.js'
 
 const spotify = new Hono()
 
@@ -124,7 +124,7 @@ spotify.get('/status', authMiddleware, async (c) => {
     success: true,
     data: {
       configured: isSpotifyConfigured(),
-      redirectUri: spotifyRedirectUri(),
+      redirectUri: spotifyConnectRedirectUri(),
       connected,
       profile: connected ? profile : null,
       premium: connected ? profile?.product === 'premium' : false,
@@ -162,7 +162,7 @@ spotify.post('/connect-url', authMiddleware, (c) => {
     success: true,
     data: {
       url: `${config.apiUrl}/api/spotify/start?ct=${encodeURIComponent(startToken)}`,
-      redirectUri: config.redirectUri,
+      redirectUri: config.connectRedirectUri,
     },
   })
 })
@@ -186,7 +186,9 @@ spotify.get('/start', (c) => {
   }
 
   const oauthState = signState({ kind: 'spotify', nonce: state.nonce, userId: state.userId })
-  return c.redirect(buildSpotifyAuthUrl({ state: oauthState }))
+  return c.redirect(
+    buildSpotifyAuthUrl({ state: oauthState, redirectUri: spotifyConnectRedirectUri() })
+  )
 })
 
 spotify.get('/callback', async (c) => {
@@ -213,7 +215,7 @@ spotify.get('/callback', async (c) => {
   }
 
   try {
-    const tokens = await exchangeSpotifyCode(code)
+    const tokens = await exchangeSpotifyCode(code, fetch, spotifyConnectRedirectUri())
     const profile = await fetchSpotifyProfile(tokens.access_token)
     const expiresAt = new Date(Date.now() + tokens.expires_in * 1000)
     const metadata = { profile, connectedAt: new Date().toISOString() }

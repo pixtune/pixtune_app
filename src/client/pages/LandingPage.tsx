@@ -24,12 +24,12 @@ export function LandingPage() {
               <div className="flex flex-col sm:flex-row gap-4">
                 <Link to="/login">
                   <Button variant="primary" size="lg" className="w-full sm:w-auto">
-                    <Play className="w-5 h-5 mr-2" /> Entrar no painel
+                    <Play className="w-5 h-5 mr-2" /> Entrar com Spotify
                   </Button>
                 </Link>
-                <Link to="/register">
+                <Link to="/#como-funciona">
                   <Button variant="secondary" size="lg" className="w-full sm:w-auto">
-                    Criar conta grátis
+                    Como funciona
                   </Button>
                 </Link>
               </div>

@@ -62,8 +62,10 @@ export function getGoogleOAuthConfig(): GoogleOAuthConfig | null {
   return {
     clientId,
     clientSecret,
-    apiUrl: (process.env.API_URL || 'http://localhost:3001').replace(/\/$/, ''),
-    appUrl: (process.env.APP_URL || 'http://localhost:3000').replace(/\/$/, ''),
+    apiUrl: (process.env.API_URL || 'http://localhost:3001')
+      .replace(/\/+$/, '')
+      .replace(/\/api$/, ''),
+    appUrl: (process.env.APP_URL || 'http://localhost:3000').replace(/\/+$/, ''),
   }
 }
 

@@ -3,7 +3,7 @@ import {
   compareQueuePriority,
   decidePriorityAction,
   sortQueueForDisplay,
-} from './queuePriorityCore'
+} from './queuePriorityCore.js'
 
 function item(
   id: string,

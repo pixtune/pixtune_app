@@ -1,8 +1,8 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
-import { authMiddleware, getUserId } from '../middleware/auth'
-import prisma from '../lib/prisma'
+import { authMiddleware, getUserId } from '../middleware/auth.js'
+import prisma from '../lib/prisma.js'
 
 const rules = new Hono()
 

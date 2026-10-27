@@ -1,10 +1,8 @@
 // PixTune Database Schema
-// SQLite para desenvolvimento local, migrações versionadas
+// PostgreSQL via Prisma ORM, com migrações versionadas.
 //
-// Notas de compatibilidade SQLite:
-// - String[] (listas) não suportado → usar String (JSON serializado)
-// - Json tipo não suportado → usar String (JSON serializado)
-// - Relação 1:1 requer @unique no campo da chave estrangeira
+// Listas e JSON são armazenados como String (JSON serializado) para manter
+// compatibilidade com o formato usado pelo cliente.
 
 generator client {
   provider = "prisma-client-js"

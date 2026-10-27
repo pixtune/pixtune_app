@@ -13,20 +13,20 @@
  * efetiva é calculada a partir de `DonationEvent.amountCents`.
  */
 
-import prisma from '../lib/prisma'
+import prisma from '../lib/prisma.js'
 import {
   compareQueuePriority,
   decidePriorityAction,
   donationAmountCents,
-} from './queuePriorityCore'
+} from './queuePriorityCore.js'
 
 export {
   compareQueuePriority,
   decidePriorityAction,
   donationAmountCents,
   sortQueueForDisplay,
-} from './queuePriorityCore'
-export type { PriorityDecision, QueueLike } from './queuePriorityCore'
+} from './queuePriorityCore.js'
+export type { PriorityDecision, QueueLike } from './queuePriorityCore.js'
 
 export const queueItemInclude = {
   donationEvent: {

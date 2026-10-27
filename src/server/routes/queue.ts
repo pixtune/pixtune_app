@@ -1,8 +1,8 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
-import { authMiddleware, getUserId } from '../middleware/auth'
-import prisma from '../lib/prisma'
+import { authMiddleware, getUserId } from '../middleware/auth.js'
+import prisma from '../lib/prisma.js'
 import {
   findActiveItem,
   finishCurrent,
@@ -10,8 +10,8 @@ import {
   promoteNextPlayable,
   queueItemInclude,
   sortQueueForDisplay,
-} from '../services/queuePriority'
-import { extractSpotifyTrackId, spotifyTrackUrl } from '../../shared/spotify'
+} from '../services/queuePriority.js'
+import { extractSpotifyTrackId, spotifyTrackUrl } from '../../shared/spotify.js'
 
 const queue = new Hono()
 

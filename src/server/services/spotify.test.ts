@@ -1,12 +1,13 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import {
   fetchPlaylistTracks,
+  getSpotifyConfig,
   normalizeSpotifyPlaylist,
   normalizeSpotifyTrack,
   scoreSpotifyTrack,
   searchSpotifyTrack,
   type FetchLike,
-} from './spotify'
+} from './spotify.js'
 
 const TRACK_ID = '4cOdK2wGLETKBW3PvgPWqT'
 
@@ -155,5 +156,39 @@ describe('normalizeSpotifyPlaylist', () => {
       public: true,
       collaborative: undefined,
     })
+  })
+})
+
+describe('getSpotifyConfig', () => {
+  const keys = [
+    'SPOTIFY_CLIENT_ID',
+    'SPOTIFY_CLIENT_SECRET',
+    'SPOTIFY_REDIRECT_URI',
+    'SPOTIFY_CONNECT_REDIRECT_URI',
+    'API_URL',
+  ] as const
+  const original = Object.fromEntries(keys.map((key) => [key, process.env[key]]))
+
+  afterEach(() => {
+    for (const key of keys) {
+      if (original[key] === undefined) delete process.env[key]
+      else process.env[key] = original[key]
+    }
+  })
+
+  it('normaliza API_URL com sufixo /api e monta os dois callbacks', () => {
+    process.env.SPOTIFY_CLIENT_ID = 'client-id'
+    process.env.SPOTIFY_CLIENT_SECRET = 'client-secret'
+    process.env.API_URL = 'https://pixtune-api.onrender.com/api/'
+    delete process.env.SPOTIFY_REDIRECT_URI
+    delete process.env.SPOTIFY_CONNECT_REDIRECT_URI
+
+    const config = getSpotifyConfig()
+
+    expect(config?.apiUrl).toBe('https://pixtune-api.onrender.com')
+    expect(config?.redirectUri).toBe(
+      'https://pixtune-api.onrender.com/api/auth/spotify/callback'
+    )
+    expect(config?.connectRedirectUri).toBe('https://pixtune-api.onrender.com/api/spotify/callback')
   })
 })

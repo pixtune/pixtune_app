@@ -11,7 +11,7 @@
  */
 
 import crypto from 'crypto'
-import prisma from '../lib/prisma'
+import prisma from '../lib/prisma.js'
 
 const LIVEPIX_API_BASE = 'https://api.livepix.gg'
 const LIVEPIX_OAUTH_URL = 'https://oauth.livepix.gg/oauth2/token'

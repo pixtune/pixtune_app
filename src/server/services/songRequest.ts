@@ -13,8 +13,8 @@
  * entra na fila aguardando um link (a fila permite anexar o link depois).
  */
 
-import { findYouTubeIdInText, youTubeWatchUrl } from '../../shared/youtube'
-import { resolveYouTubeVideo, type FetchLike } from './youtube'
+import { findYouTubeIdInText, youTubeWatchUrl } from '../../shared/youtube.js'
+import { resolveYouTubeVideo, type FetchLike } from './youtube.js'
 
 export type SongRequestStatus = 'detected' | 'needs_video' | 'not_song' | 'error'
 

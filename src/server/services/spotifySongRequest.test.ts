@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { detectSpotifySongRequest, spotifySongRequestReasonMessage } from './spotifySongRequest'
-import type { FetchLike } from './spotify'
+import { detectSpotifySongRequest, spotifySongRequestReasonMessage } from './spotifySongRequest.js'
+import type { FetchLike } from './spotify.js'
 
 const TRACK_ID = '4cOdK2wGLETKBW3PvgPWqT'
 

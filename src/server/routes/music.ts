@@ -1,8 +1,8 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
-import { authMiddleware, getUserId } from '../middleware/auth'
-import prisma from '../lib/prisma'
+import { authMiddleware, getUserId } from '../middleware/auth.js'
+import prisma from '../lib/prisma.js'
 import {
   donationAmountCents,
   findActiveItem,
@@ -10,13 +10,13 @@ import {
   finishCurrent,
   queueItemInclude,
   startQueueItem,
-} from '../services/queuePriority'
-import { extractSpotifyTrackId } from '../../shared/spotify'
+} from '../services/queuePriority.js'
+import { extractSpotifyTrackId } from '../../shared/spotify.js'
 import {
   fetchSpotifyTrack,
   getSpotifyAccessToken,
   SpotifyError,
-} from '../services/spotify'
+} from '../services/spotify.js'
 
 const music = new Hono()
 

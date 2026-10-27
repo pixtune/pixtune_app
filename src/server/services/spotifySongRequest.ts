@@ -8,15 +8,15 @@
  * Não há busca no YouTube nem reprodução fora do Spotify.
  */
 
-import { findSpotifyTrackIdInText } from '../../shared/spotify'
-import { parseSongRequest } from './songRequest'
+import { findSpotifyTrackIdInText } from '../../shared/spotify.js'
+import { parseSongRequest } from './songRequest.js'
 import {
   fetchSpotifyTrack,
   searchSpotifyTrack,
   SpotifyError,
   type FetchLike,
   type SpotifyTrack,
-} from './spotify'
+} from './spotify.js'
 
 export type SpotifySongRequestStatus = 'detected' | 'not_song' | 'error'
 

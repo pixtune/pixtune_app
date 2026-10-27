@@ -1,7 +1,6 @@
 import { Button } from '@client/components/ui/Button'
 import { Music } from 'lucide-react'
 import { useAuth } from '@client/contexts/AuthContext'
-import { spotifyLogin } from '@client/api/client'
 
 /**
  * Página de entrada com único botão "Entrar com Spotify".

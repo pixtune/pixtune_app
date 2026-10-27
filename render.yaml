@@ -1,39 +1,47 @@
-# PixTune Backend + Frontend — Web Service (Deploy manual via Render dashboard)
-# Full-stack: frontend estático servido por nginx no dist/client, backend rodando no render:deploy
+# Blueprint oficial do Render — somente a API do PixTune.
+# O frontend é publicado separadamente no Cloudflare Pages.
+#
+# Referência: https://render.com/docs/blueprint-spec
+#
+# Segredos usam "sync: false": o Render pede o valor na criação do Blueprint e
+# preserva o valor existente nas sincronizações seguintes. Nenhum segredo real
+# fica versionado neste arquivo.
 services:
-  # ─── Backend API ───
-  - type: render:deploy
+  - type: web
     name: pixtune-api
-    builds:
-      - command: "npm install && npx prisma generate && npm run build:server"
-        timeout: 300
-        cache:
-          key: pixtune
-          paths:
-            - node_modules/
+    runtime: node
+    plan: free # ajuste para o plano desejado (free sofre spin-down por inatividade)
+    buildCommand: npm ci --include=dev && npx prisma generate && npm run build:server
+    startCommand: npm start
     healthCheckPath: /health
-    healthCheckMethod: GET
-    startCommand: "node dist/server/main.js"
-    secrets:
-      - DATABASE_URL
-      - JWT_SECRET
-      - SPOTIFY_CLIENT_ID
-      - SPOTIFY_CLIENT_SECRET
-    environmentVariables:
+    envVars:
       - key: NODE_ENV
-        sync: true
         value: production
-      - key: APP_URL
-        sync: true
-        value: https://pixtune-app.pages.dev
+
+      # Origem da API, SEM o sufixo /api (o código já adiciona /api nas rotas).
       - key: API_URL
-        sync: true
-        value: https://pixtune-api.onrender.com/api
-      - key: CORS_ORIGINS
-        sync: true
+        value: https://pixtune-api.onrender.com
+
+      # Origem do frontend no Cloudflare Pages.
+      - key: APP_URL
         value: https://pixtune-app.pages.dev
-  # ─── Frontend ───
-  - type: render:build
-    name: pixtune-frontend
-    buildCommand: "npm run build:client"
-    startCommand: "http-server dist/client -p 3001 --silent -c-1"
+
+      # Inclua aqui o domínio de produção do Cloudflare Pages (e custom domains).
+      - key: CORS_ORIGINS
+        value: https://pixtune-app.pages.dev
+
+      # URIs exatas cadastradas no Spotify Developer Dashboard.
+      - key: SPOTIFY_REDIRECT_URI
+        value: https://pixtune-api.onrender.com/api/auth/spotify/callback
+      - key: SPOTIFY_CONNECT_REDIRECT_URI
+        value: https://pixtune-api.onrender.com/api/spotify/callback
+
+      # Segredos: preencha no painel do Render.
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: SPOTIFY_CLIENT_ID
+        sync: false
+      - key: SPOTIFY_CLIENT_SECRET
+        sync: false

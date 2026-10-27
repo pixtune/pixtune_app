@@ -1,5 +1,5 @@
 import { Outlet, Link } from 'react-router-dom'
-import { UserPlus } from 'lucide-react'
+import { Music } from 'lucide-react'
 import { Button } from '@client/components/ui/Button'
 
 export function PublicLayout() {
@@ -22,10 +22,10 @@ export function PublicLayout() {
             <Link to="/login" className="text-pixtune-textSecondary hover:text-pixtune-text transition-colors font-medium">
               Entrar
             </Link>
-            <Link to="/register">
+            <Link to="/login">
               <Button className="gap-2">
-                <UserPlus className="w-4 h-4" />
-                Começar grátis
+                <Music className="w-4 h-4" />
+                Entrar com Spotify
               </Button>
             </Link>
           </nav>
@@ -60,7 +60,7 @@ export function PublicLayout() {
               <h4 className="font-semibold text-body-sm mb-3">Conta</h4>
               <ul className="space-y-2 text-pixtune-textSecondary text-body-sm">
                 <li><Link to="/login" className="hover:text-pixtune-primary transition-colors">Entrar</Link></li>
-                <li><Link to="/register" className="hover:text-pixtune-primary transition-colors">Criar conta</Link></li>
+                <li><Link to="/login" className="hover:text-pixtune-primary transition-colors">Entrar com Spotify</Link></li>
                 <li><Link to="/dashboard" className="hover:text-pixtune-primary transition-colors">Abrir painel</Link></li>
               </ul>
             </div>

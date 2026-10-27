@@ -5,7 +5,7 @@
  * chave de API, OAuth, download ou extração de áudio.
  */
 
-import { youTubeThumbnailUrl, youTubeWatchUrl } from '../../shared/youtube'
+import { youTubeThumbnailUrl, youTubeWatchUrl } from '../../shared/youtube.js'
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>
 

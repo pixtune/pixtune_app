@@ -3,7 +3,7 @@ import {
   LivePixService,
   livePixMessageToEvent,
   livePixPaymentToEvent,
-} from './livepix'
+} from './livepix.js'
 
 describe('livepix', () => {
   it('converte mensagem oficial mantendo o valor em centavos', () => {

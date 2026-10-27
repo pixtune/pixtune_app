@@ -10,7 +10,7 @@ import {
   signOAuthState,
   verifyOAuthState,
   type FetchLike,
-} from './googleOAuth'
+} from './googleOAuth.js'
 
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {

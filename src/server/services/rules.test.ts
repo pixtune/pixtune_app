@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { matchesAmountAndKeywords, parseKeywords } from './rules'
+import { matchesAmountAndKeywords, parseKeywords } from './rules.js'
 
 const baseRule = { minAmount: 500, maxAmount: 1000, keywords: null as string | null }
 

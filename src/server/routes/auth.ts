@@ -18,7 +18,7 @@ import crypto from 'crypto'
 import JWT from 'jsonwebtoken'
 import { Hono } from 'hono'
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
-import prisma from '../lib/prisma'
+import prisma from '../lib/prisma.js'
 import {
   SPOTIFY_SCOPES,
   buildSpotifyAuthUrl,
@@ -26,13 +26,13 @@ import {
   fetchSpotifyProfile,
   getSpotifyConfig,
   isSpotifyConfigured,
-  SpotifyError,
-  type SpotifyProfile,
-} from '../services/spotify'
+} from '../services/spotify.js'
+import { createSession, removeSession, validateSession } from '../services/auth.js'
 
 const auth = new Hono()
 
 const OAUTH_NONCE_COOKIE = 'pixtune_spotify_nonce'
+const SESSION_COOKIE = 'pixtune_token'
 const JWT_SECRET = process.env.JWT_SECRET || 'fallback-secret-change-in-production'
 
 interface SpotifyOAuthState {
@@ -46,14 +46,25 @@ function appUrl(path: string): string {
   return `${base}${path}`
 }
 
-function cookieOptions() {
+function cookieOptions(maxAge = 600) {
+  // Em produção o frontend (APP_URL) e a API podem estar em domínios distintos.
+  // Nesse caso o cookie precisa ser SameSite=None + Secure para ser enviado
+  // nos fetch() com credentials: 'include'.
+  const secure = (process.env.API_URL || '').startsWith('https')
   return {
     httpOnly: true,
-    sameSite: 'Lax' as const,
+    sameSite: (secure ? 'None' : 'Lax') as 'None' | 'Lax',
     path: '/',
-    maxAge: 600,
-    secure: (process.env.API_URL || '').startsWith('https'),
+    maxAge,
+    secure,
   }
+}
+
+/** Token da sessão PixTune: header Bearer (localStorage) ou cookie HttpOnly. */
+function getSessionToken(c: any): string | undefined {
+  const header = c.req.header('Authorization')
+  const bearer = header?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim()
+  return bearer || getCookie(c, SESSION_COOKIE)
 }
 
 function createNonce(): string {
@@ -86,20 +97,13 @@ function errorResponse(c: any, code: string, message: string, status: 400 | 401 
 // ---------------------------------------------------------------
 
 auth.get('/me', async (c) => {
-  const sessionToken = c.req.header('Authorization')?.replace('Bearer ', '')
+  const sessionToken = getSessionToken(c)
   if (!sessionToken) {
     return errorResponse(c, 'NOT_AUTHENTICATED', 'Não autenticado.', 401)
   }
 
-  const session = await prisma.session.findUnique({
-    where: { token: sessionToken },
-    include: { user: true },
-  })
-
-  if (!session || session.expiresAt < new Date()) {
-    if (session) {
-      await prisma.session.delete({ where: { id: session.id } })
-    }
+  const user = await validateSession(sessionToken)
+  if (!user) {
     return errorResponse(c, 'SESSION_EXPIRED', 'Sessão expirada.', 401)
   }
 
@@ -107,11 +111,11 @@ auth.get('/me', async (c) => {
     success: true,
     data: {
       user: {
-        id: session.user.id,
-        spotifyId: session.user.spotifyId,
-        name: session.user.name,
-        email: session.user.email,
-        avatarUrl: session.user.avatarUrl,
+        id: user.id,
+        spotifyId: user.spotifyId,
+        name: user.name ?? null,
+        email: user.email,
+        avatarUrl: user.avatarUrl ?? null,
       },
     },
   })
@@ -227,27 +231,11 @@ auth.get('/spotify/callback', async (c) => {
       },
     })
 
-    // Cria sessão PixTune
-    const sessionToken = crypto.randomBytes(32).toString('hex')
-    const sessionExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) // 7 dias
+    // Cria sessão PixTune: o JWT é gravado em Session.token e enviado no
+    // cookie HttpOnly. O mesmo token também funciona como Bearer.
+    const jwt = await createSession(user.id, 7)
 
-    await prisma.session.create({
-      data: {
-        token: sessionToken,
-        userId: user.id,
-        expiresAt: sessionExpiresAt,
-      },
-    })
-
-    // Cookie HttpOnly anti-CSRF + JWT
-    const jwt = JWT.sign({ userId: user.id, sessionToken }, JWT_SECRET, {
-      expiresIn: '7d',
-    })
-
-    setCookie(c, 'pixtune_token', jwt, {
-      ...cookieOptions(),
-      maxAge: 7 * 24 * 60 * 60,
-    })
+    setCookie(c, SESSION_COOKIE, jwt, cookieOptions(7 * 24 * 60 * 60))
 
     return c.redirect(appUrl('/dashboard'))
   } catch {
@@ -260,17 +248,13 @@ auth.get('/spotify/callback', async (c) => {
 // ---------------------------------------------------------------
 
 auth.post('/logout', async (c) => {
-  const token = c.req.header('Authorization')?.replace('Bearer ', '') ||
-    c.req.cookie('pixtune_token')
+  const token = getSessionToken(c)
 
   if (token) {
-    const session = await prisma.session.findUnique({ where: { token } })
-    if (session) {
-      await prisma.session.delete({ where: { id: session.id } })
-    }
+    await removeSession(token)
   }
 
-  deleteCookie(c, 'pixtune_token', { path: '/' })
+  deleteCookie(c, SESSION_COOKIE, { path: '/' })
   return c.json({ success: true })
 })
 

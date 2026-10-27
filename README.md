@@ -45,7 +45,7 @@ A detecção é heurística. Ela foi feita para ser previsível e conservadora, 
 | Roteamento | React Router 6 |
 | Backend | Hono (Node.js puro) |
 | Banco | PostgreSQL via Prisma ORM |
-| Autenticação | E-mail/senha (JWT + sessões no banco, `scrypt`) |
+| Autenticação | Spotify OAuth 2.0 (JWT + sessões no banco) |
 | Validação | Zod |
 | Detecção musical | Spotify Web API (Search) |
 | Reprodução | Web Playback SDK oficial do Spotify (Spotify Connect) |
@@ -87,8 +87,8 @@ npm install
 copy .env.example .env        # Windows
 # cp .env.example .env        # Linux/macOS
 
-# 3. Criar/sincronizar o banco SQLite
-npm run db:push
+# 3. Criar/sincronizar o banco PostgreSQL local
+npm run db:push      # apenas desenvolvimento local; em produção use migrações
 
 # 4. Subir frontend + backend juntos
 npm run dev
@@ -105,46 +105,88 @@ O backend carrega o arquivo `.env` automaticamente, sem depender de `dotenv`. Va
 ### Variáveis mínimas (`.env`)
 
 ```env
-DATABASE_URL="file:./prisma/dev.db"
+DATABASE_URL="postgresql://usuario:senha@localhost:5432/pixtune?schema=public"
 JWT_SECRET="troque-por-uma-chave-longa-e-aleatoria"
 NODE_ENV=development
+API_URL="http://localhost:3001"
+APP_URL="http://localhost:3000"
+CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:3000"
+SPOTIFY_CLIENT_ID="seu-client-id"
+SPOTIFY_CLIENT_SECRET="seu-client-secret"
+SPOTIFY_REDIRECT_URI="http://localhost:3001/api/auth/spotify/callback"
+SPOTIFY_CONNECT_REDIRECT_URI="http://localhost:3001/api/spotify/callback"
 ```
 
-### Conectar a conta do Spotify (OAuth 2.0 + Web Playback SDK)
+> `API_URL` é sempre a **origem** da API, sem o sufixo `/api`. O código adiciona `/api` nas rotas.
+> Valores antigos terminados em `/api` são normalizados, mas o recomendado é corrigir a variável.
 
-A seção **Configurações → Spotify** conecta a conta pelo OAuth 2.0 oficial. O servidor guarda o
-refresh token e entrega ao navegador apenas um access token de curta duração, necessário para
-registrar o dispositivo Spotify Connect criado pelo Web Playback SDK.
+### Spotify OAuth 2.0 (login + conexão da conta)
+
+O Spotify é o **único** método de autenticação do PixTune. Existem dois fluxos OAuth com
+callbacks diferentes:
+
+| Fluxo | Rota da API | Uso |
+| --- | --- | --- |
+| Login | `/api/auth/spotify/callback` | Botão **Entrar com Spotify** |
+| Conexão da conta | `/api/spotify/callback` | **Configurações → Spotify → Conectar conta** |
 
 Como configurar:
 
 1. Abra o [Spotify for Developers](https://developer.spotify.com/dashboard) e crie um app.
-2. Em **Redirect URIs**, cadastre exatamente:
-   - `http://localhost:3001/api/spotify/callback`
-3. Copie o **Client ID** e o **Client Secret** para o `.env` e reinicie a API:
+2. Em **Redirect URIs**, cadastre **as duas URIs** exatas, sem barra final:
+   - Desenvolvimento:
+     - `http://localhost:3001/api/auth/spotify/callback`
+     - `http://localhost:3001/api/spotify/callback`
+   - Produção (substitua pelo domínio real da API no Render):
+     - `https://pixtune-api.onrender.com/api/auth/spotify/callback`
+     - `https://pixtune-api.onrender.com/api/spotify/callback`
+3. Copie o **Client ID** e o **Client Secret** para o `.env` (ou para o painel do Render):
 
 ```env
 SPOTIFY_CLIENT_ID="seu-client-id"
 SPOTIFY_CLIENT_SECRET="seu-client-secret"
-SPOTIFY_REDIRECT_URI="http://localhost:3001/api/spotify/callback"
+SPOTIFY_REDIRECT_URI="http://localhost:3001/api/auth/spotify/callback"
+SPOTIFY_CONNECT_REDIRECT_URI="http://localhost:3001/api/spotify/callback"
 ```
 
-4. Entre no PixTune, abra **Configurações → Spotify** e clique em **Conectar conta do Spotify**.
-5. Confirme que a conta exibida é **Premium**.
+4. Entre no PixTune com **Entrar com Spotify**.
+5. Abra **Configurações → Spotify**, clique em **Conectar conta do Spotify** e confirme que a
+   conta exibida é **Premium**.
+
+O servidor guarda o refresh token e entrega ao navegador apenas um access token de curta duração,
+necessário para registrar o dispositivo Spotify Connect criado pelo Web Playback SDK.
 
 > **Modo de desenvolvimento:** o Spotify autoriza no máximo 5 contas por app. Para atender mais
 > streamers, cada instalação pode usar credenciais próprias ou o app precisa de aprovação do Spotify.
 > O uso em transmissão pública/comercial é restrito pelos termos do Spotify; o PixTune usa apenas
 > APIs oficiais, mas a conta/app podem ser limitados.
 
-As credenciais do Live Pix são informadas em **Configurações → Live Pix** e ficam no banco local
-(SQLite). Nenhuma credencial real vem preenchida no repositório.
+As credenciais do Live Pix são informadas em **Configurações → Live Pix** e ficam no banco
+PostgreSQL. Nenhuma credencial real vem preenchida no repositório.
 
-### Hospedagem
+### Publicação: GitHub → Render (API) → Cloudflare Pages (frontend)
 
-O frontend é estático (`dist/client`) e pode ser servido por qualquer host de arquivos estáticos.
-O backend (Hono + Prisma/SQLite + webhooks do Live Pix) precisa de um runtime Node e **não** roda
-em host estático. Inclua o domínio do frontend em `CORS_ORIGINS` no `.env` da API.
+O frontend é estático (`dist/client`) e é publicado no **Cloudflare Pages**. A API
+(Hono + Prisma/PostgreSQL + webhooks do Live Pix) roda no **Render** como Web Service Node.
+
+1. **GitHub:** envie o código para o repositório conectado ao Render e ao Cloudflare Pages.
+2. **Render (API):**
+   - Use o Blueprint `render.yaml` ou crie um **Web Service** com runtime Node.
+   - Build Command: `npm ci --include=dev && npx prisma generate && npm run build:server`
+   - Start Command: `npm start`
+   - Health Check Path: `/health`
+   - Configure as variáveis listadas em [`docs/database-migration.md`](docs/database-migration.md).
+   - `API_URL` deve ser a origem da API **sem `/api`**.
+3. **Cloudflare Pages (frontend):**
+   - Build Command: `npm run build:client`
+   - Output directory: `dist/client`
+   - Variável `VITE_API_URL` = origem da API, por exemplo `https://pixtune-api.onrender.com`
+     (sem `/api`).
+   - Cadastre o domínio do Pages em `CORS_ORIGINS` na API e nas Redirect URIs do Spotify.
+4. **Banco:** antes do primeiro deploy funcional, siga a estratégia de
+   [`docs/database-migration.md`](docs/database-migration.md). Não use `prisma db push` em produção.
+
+> O `render.yaml` não publica o frontend. O frontend é responsabilidade do Cloudflare Pages.
 
 ---
 
@@ -156,12 +198,12 @@ em host estático. Inclua o domínio do frontend em `CORS_ORIGINS` no `.env` da 
 | `npm run dev:client` | Apenas frontend (Vite) |
 | `npm run dev:server` | Apenas backend (tsx) |
 | `npm run build` | Build de produção (cliente + servidor) |
-| `npm start` | Executa o build do servidor |
+| `npm start` | Executa `dist/server/server/main.js` (build do servidor) |
 | `npm run typecheck` | Checagem de tipos do cliente e do servidor |
 | `npm test` | Testes unitários (Vitest) |
 | `npm run lint` | ESLint |
 | `npm run format` | Prettier |
-| `npm run db:push` | Sincroniza o schema Prisma com o SQLite |
+| `npm run db:push` | Sincroniza o schema com o banco local (nunca em produção) |
 | `npm run db:studio` | Abre o Prisma Studio |
 
 ---
@@ -171,34 +213,40 @@ em host estático. Inclua o domínio do frontend em `CORS_ORIGINS` no `.env` da 
 ```
 src/
 ├── client/                  # Frontend
-│   ├── api/client.ts        # Cliente HTTP tipado (Bearer token)
+│   ├── api/client.ts        # Cliente HTTP tipado (cookie HttpOnly ou Bearer)
 │   ├── components/          # UI e proteção de rotas
 │   ├── contexts/            # AuthContext
 │   ├── layouts/             # PublicLayout, AppLayout
 │   ├── player/              # SpotifyAudioPlayer (Web Playback SDK oficial)
-│   └── pages/               # Landing, Login, Register, Dashboard, Fila, Histórico, Regras, Configurações
+│   └── pages/               # Landing, Login, Dashboard, Fila, Histórico, Regras, Configurações
 ├── shared/                  # Tipos, utilitários e parsing de links do Spotify
 └── server/                  # Backend Hono
     ├── env.ts               # Carregamento simples do .env
     ├── index.ts             # App, CORS e montagem das rotas
     ├── main.ts              # Adaptador Node HTTP
     ├── lib/prisma.ts
-    ├── middleware/auth.ts   # JWT + sessão + isolamento por userId
+    ├── middleware/auth.ts   # JWT/cookie + sessão + isolamento por userId
     ├── routes/              # auth, donations, queue, music, settings, rules, spotify
     └── services/            # auth, googleOAuth, livepix, rules, spotify, spotifySongRequest
  prisma/schema.prisma         # User, Session, Settings, Integration, DonationEvent, DonationRule, QueueItem...
+ prisma/migrations/           # migrações versionadas do PostgreSQL
+ docs/database-migration.md   # estratégia de migração e variáveis de produção
 ```
 
 ---
 
 ## Autenticação e isolamento
 
-- Cadastro/login reais com e-mail e senha.
-- Senha armazenada como hash `scrypt` (salt + chave), nunca em texto puro.
-- JWT assinado com `JWT_SECRET`; a sessão correspondente é gravada na tabela `Session`.
-- Toda rota autenticada valida o JWT **e** a sessão no banco.
+- **Único método de entrada:** Spotify OAuth 2.0. Não há cadastro nem login por e-mail/senha.
+- O `User` é criado/sincronizado por `spotifyId`; `email` é opcional e não único.
+- Cada login gera uma sessão na tabela `Session` com token JWT assinado por `JWT_SECRET`.
+- O token é enviado em cookie `HttpOnly` (`pixtune_token`) e também é aceito como
+  `Authorization: Bearer ...`.
+- Toda rota autenticada valida o JWT **e** a sessão no banco; logout remove a sessão.
 - Todas as consultas usam o `userId` da sessão: um streamer não acessa dados de outro.
-- O token fica em `localStorage` (chave `pixtune_token`). Em produção com alto requisito de segurança, prefira cookie `httpOnly` + CSRF (ver Limitações).
+- Em produção, com frontend e API em domínios diferentes, o cookie usa `SameSite=None; Secure`.
+  Navegadores que bloqueiam cookies de terceiros podem exigir um domínio compartilhado
+  (por exemplo, `app.seudominio.com` e `api.seudominio.com`).
 
 ---
 
@@ -363,9 +411,14 @@ Cadastre no Live Pix a URL `https://<subdominio>.ngrok-free.app/api/donations/we
 
 ### Deploy
 
-- `npm run build` gera o cliente em `dist/client` e o servidor em `dist/server`; `npm start` sobe apenas a API.
-- Sirva `dist/client` em um host estático (ou configure o Hono para servir os arquivos) e ajuste o CORS em `src/server/index.ts` para o domínio público. Hoje o CORS aceita apenas `localhost:3000`.
+- `npm run build` gera o cliente em `dist/client` e o servidor em `dist/server/server`;
+  `npm start` executa `dist/server/server/main.js`.
+- A API vai para o **Render** (`render.yaml`) e o frontend estático vai para o
+  **Cloudflare Pages** (`dist/client`).
 - Em produção, use HTTPS, um `JWT_SECRET` forte e nunca versione o `.env`.
+- O CORS é configurado pela variável `CORS_ORIGINS`; não é mais fixo em `localhost:3000`.
+- Migrações de banco **não** rodam automaticamente no deploy. Siga
+  [`docs/database-migration.md`](docs/database-migration.md).
 
 ---
 
@@ -429,25 +482,30 @@ para músicas doadas e enquanto houver doações pendentes.
 
 ## Segurança
 
-- Senhas com `scrypt` (salt aleatório por usuário).
+- Autenticação exclusiva via Spotify OAuth 2.0; não há senha armazenada.
 - JWT + sessão persistida; logout remove a sessão.
 - Validação de entrada com Zod.
-- Segredos apenas no backend; o frontend nunca recebe `passwordHash`, `clientSecret` ou tokens de terceiros.
-- O `SPOTIFY_CLIENT_SECRET` fica no `.env` do servidor e nunca é enviado ao navegador.
-- Na conexão do Spotify (OAuth 2.0), o `client_secret` fica só no servidor; o navegador recebe apenas a URL de autorização. O `state` é assinado (JWT) e vinculado a um cookie `HttpOnly` anti-CSRF.
-- O refresh token do Spotify fica no banco local. O navegador recebe apenas access tokens de curta duração para o Web Playback SDK.
-- As credenciais do Live Pix ficam no banco local em texto simples (metadata da integração). Para produção, criptografe esses campos ou use um cofre de segredos.
-- `.env` fora do Git; `.env.example` sem credenciais.
-- Mensagens de erro de login não revelam se o e-mail existe.
+- Segredos apenas no backend; o frontend nunca recebe `clientSecret` ou tokens de terceiros.
+- O `SPOTIFY_CLIENT_SECRET` fica no `.env`/Render e nunca é enviado ao navegador.
+- Os fluxos OAuth usam `state` assinado (JWT) e cookie `HttpOnly` anti-CSRF, com callbacks
+  separados para login e para conexão da conta.
+- O refresh token do Spotify fica no banco PostgreSQL. O navegador recebe apenas access tokens
+  de curta duração para o Web Playback SDK.
+- As credenciais do Live Pix ficam no banco em texto simples (metadata da integração). Para
+  produção, criptografe esses campos ou use um cofre de segredos.
+- `.env` fora do Git; `.env.example` sem credenciais reais.
 
 ---
 
 ## Testes e verificação
 
 ```bash
-npm test            # testes unitários
+npx prisma generate # gera o Prisma Client
 npm run typecheck   # cliente + servidor
-npm run build       # build de produção
+npm run build:server
+npm run build:client
+npm test            # testes unitários
+npm start           # inicia o build compilado (produção)
 ```
 
 Os testes unitários cobrem:
@@ -463,9 +521,9 @@ Os testes unitários cobrem:
 - serviço legado de OAuth do Google, mantido apenas por compatibilidade.
 
 Testes E2E automatizados (Playwright) ainda não estão implementados. O fluxo foi
-verificado manualmente via API e navegador: cadastro, login, sessão, isolamento,
-prioridade por valor, simulação de doação, fila, estados de conexão do Spotify e
-renderização das páginas. A reprodução real do Spotify depende de credenciais
+verificado manualmente via API e navegador: login com Spotify, sessão por cookie/Bearer,
+isolamento por usuário, prioridade por valor, simulação de doação, fila, estados de conexão
+do Spotify e renderização das páginas. A reprodução real do Spotify depende de credenciais
 válidas e de uma conta Premium no ambiente do streamer.
 
 ---

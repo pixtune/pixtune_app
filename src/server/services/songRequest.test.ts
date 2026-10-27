@@ -5,7 +5,7 @@ import {
   scoreSongCandidate,
   scoreYouTubeCandidate,
   type SongCandidate,
-} from './songRequest'
+} from './songRequest.js'
 
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {

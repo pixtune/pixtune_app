@@ -6,7 +6,7 @@ import {
   normalizeSpotifyTrack,
   spotifyTrackUrl,
   spotifyTrackUri,
-} from './spotify'
+} from './spotify.js'
 
 const TRACK_ID = '4cOdK2wGLETKBW3PvgPWqT'
 const PLAYLIST_ID = '37i9dQZF1DXcBWIGoYBM5M'

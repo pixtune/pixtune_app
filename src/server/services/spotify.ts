@@ -10,8 +10,8 @@
  * porque o Web Playback SDK exige isso para registrar o dispositivo.
  */
 
-import prisma from '../lib/prisma'
-import { spotifyTrackUrl, spotifyTrackUri } from '../../shared/spotify'
+import prisma from '../lib/prisma.js'
+import { spotifyTrackUrl, spotifyTrackUri } from '../../shared/spotify.js'
 
 const SPOTIFY_AUTH_URL = 'https://accounts.spotify.com/authorize'
 const SPOTIFY_TOKEN_URL = 'https://accounts.spotify.com/api/token'
@@ -34,7 +34,10 @@ export interface SpotifyConfig {
   clientSecret: string
   apiUrl: string
   appUrl: string
+  /** Callback do login (Entrar com Spotify). */
   redirectUri: string
+  /** Callback da conexão da conta em Configurações → Spotify. */
+  connectRedirectUri: string
 }
 
 export function getSpotifyConfig(): SpotifyConfig | null {
@@ -42,13 +45,20 @@ export function getSpotifyConfig(): SpotifyConfig | null {
   const clientSecret = (process.env.SPOTIFY_CLIENT_SECRET || '').trim()
   if (!clientId || !clientSecret) return null
 
-  const apiUrl = (process.env.API_URL || 'http://localhost:3001').replace(/\/$/, '')
-  const appUrl = (process.env.APP_URL || 'http://localhost:3000').replace(/\/$/, '')
+  // API_URL é a origem, sem /api. Normalizamos valores antigos que ainda
+  // tenham o sufixo para não gerar URLs como /api/api/auth/...
+  const apiUrl = (process.env.API_URL || 'http://localhost:3001')
+    .replace(/\/+$/, '')
+    .replace(/\/api$/, '')
+  const appUrl = (process.env.APP_URL || 'http://localhost:3000').replace(/\/+$/, '')
   const redirectUri = (
     process.env.SPOTIFY_REDIRECT_URI || `${apiUrl}/api/auth/spotify/callback`
   ).trim()
+  const connectRedirectUri = (
+    process.env.SPOTIFY_CONNECT_REDIRECT_URI || `${apiUrl}/api/spotify/callback`
+  ).trim()
 
-  return { clientId, clientSecret, apiUrl, appUrl, redirectUri }
+  return { clientId, clientSecret, apiUrl, appUrl, redirectUri, connectRedirectUri }
 }
 
 export function isSpotifyConfigured(): boolean {
@@ -56,12 +66,17 @@ export function isSpotifyConfigured(): boolean {
 }
 
 export function spotifyRedirectUri(): string {
-  return getSpotifyConfig()?.redirectUri || 'http://localhost:3001/api/spotify/callback'
+  return getSpotifyConfig()?.redirectUri || 'http://localhost:3001/api/auth/spotify/callback'
+}
+
+export function spotifyConnectRedirectUri(): string {
+  return getSpotifyConfig()?.connectRedirectUri || 'http://localhost:3001/api/spotify/callback'
 }
 
 export function buildSpotifyAuthUrl(options: {
   state: string
   showDialog?: boolean
+  redirectUri?: string
 }): string {
   const config = getSpotifyConfig()
   if (!config) throw new SpotifyError('Spotify não configurado.', 'NOT_CONFIGURED')
@@ -69,7 +84,7 @@ export function buildSpotifyAuthUrl(options: {
   const params = new URLSearchParams({
     client_id: config.clientId,
     response_type: 'code',
-    redirect_uri: config.redirectUri,
+    redirect_uri: options.redirectUri || config.redirectUri,
     scope: SPOTIFY_SCOPES.join(' '),
     state: options.state,
   })
@@ -99,7 +114,8 @@ function basicAuth(config: SpotifyConfig): string {
 
 export async function exchangeSpotifyCode(
   code: string,
-  fetchImpl: FetchLike = fetch
+  fetchImpl: FetchLike = fetch,
+  redirectUri?: string
 ): Promise<SpotifyTokenResponse> {
   const config = getSpotifyConfig()
   if (!config) throw new SpotifyError('Spotify não configurado.', 'NOT_CONFIGURED')
@@ -107,7 +123,7 @@ export async function exchangeSpotifyCode(
   const body = new URLSearchParams({
     grant_type: 'authorization_code',
     code,
-    redirect_uri: config.redirectUri,
+    redirect_uri: redirectUri || config.redirectUri,
   })
 
   const res = await fetchImpl(SPOTIFY_TOKEN_URL, {

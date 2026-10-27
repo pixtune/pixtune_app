@@ -12,8 +12,8 @@
 
 import { Hono } from 'hono'
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
-import { authMiddleware, getUserId } from '../middleware/auth'
-import prisma from '../lib/prisma'
+import { authMiddleware, getUserId } from '../middleware/auth.js'
+import prisma from '../lib/prisma.js'
 import {
   YOUTUBE_SCOPES,
   buildGoogleAuthUrl,
@@ -26,7 +26,7 @@ import {
   signOAuthState,
   verifyOAuthState,
   type YouTubeChannelInfo,
-} from '../services/googleOAuth'
+} from '../services/googleOAuth.js'
 
 const youtube = new Hono()
 

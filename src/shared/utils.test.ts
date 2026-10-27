@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { clamp, formatCurrency, formatDuration } from './utils'
+import { clamp, formatCurrency, formatDuration } from './utils.js'
 
 describe('formatCurrency', () => {
   it('formata centavos em reais', () => {

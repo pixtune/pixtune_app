@@ -6,7 +6,7 @@
  * configurações que são específicas do fluxo de pedidos musicais.
  */
 
-import prisma from '../lib/prisma'
+import prisma from '../lib/prisma.js'
 
 export type SongRequestAction = 'add_to_queue' | 'play_next' | 'ignore'
 
