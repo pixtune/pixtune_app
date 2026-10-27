@@ -179,16 +179,16 @@ describe('getSpotifyConfig', () => {
   it('normaliza API_URL com sufixo /api e monta os dois callbacks', () => {
     process.env.SPOTIFY_CLIENT_ID = 'client-id'
     process.env.SPOTIFY_CLIENT_SECRET = 'client-secret'
-    process.env.API_URL = 'https://pixtune-api.onrender.com/api/'
+    process.env.API_URL = 'https://pixtune-app.onrender.com/api/'
     delete process.env.SPOTIFY_REDIRECT_URI
     delete process.env.SPOTIFY_CONNECT_REDIRECT_URI
 
     const config = getSpotifyConfig()
 
-    expect(config?.apiUrl).toBe('https://pixtune-api.onrender.com')
+    expect(config?.apiUrl).toBe('https://pixtune-app.onrender.com')
     expect(config?.redirectUri).toBe(
-      'https://pixtune-api.onrender.com/api/auth/spotify/callback'
+      'https://pixtune-app.onrender.com/api/auth/spotify/callback'
     )
-    expect(config?.connectRedirectUri).toBe('https://pixtune-api.onrender.com/api/spotify/callback')
+    expect(config?.connectRedirectUri).toBe('https://pixtune-app.onrender.com/api/spotify/callback')
   })
 })

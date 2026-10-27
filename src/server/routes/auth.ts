@@ -152,6 +152,10 @@ auth.get('/spotify/start', (c) => {
   const cookieNonce = getCookie(c, OAUTH_NONCE_COOKIE)
 
   if (!state || state.kind !== 'spotify_start' || !cookieNonce || state.nonce !== cookieNonce) {
+    console.warn('[auth] Início do OAuth rejeitado.', {
+      hasState: Boolean(state),
+      hasNonceCookie: Boolean(cookieNonce),
+    })
     return c.redirect(appUrl('/login?spotify=invalid'))
   }
   if (!isSpotifyConfigured()) {
@@ -169,13 +173,20 @@ auth.get('/spotify/callback', async (c) => {
   const cookieNonce = getCookie(c, OAUTH_NONCE_COOKIE)
   deleteCookie(c, OAUTH_NONCE_COOKIE, { path: '/' })
 
-  if (error) return c.redirect(appUrl('/login?spotify=denied'))
+  if (error) {
+    console.warn('[auth] Spotify retornou erro no login:', error)
+    return c.redirect(appUrl('/login?spotify=denied'))
+  }
   if (!code || !stateToken) {
     return c.redirect(appUrl('/login?spotify=invalid'))
   }
 
   const state = verifyState(stateToken)
   if (!state || state.kind !== 'spotify' || !cookieNonce || state.nonce !== cookieNonce) {
+    console.warn('[auth] Callback do login rejeitado.', {
+      hasState: Boolean(state),
+      hasNonceCookie: Boolean(cookieNonce),
+    })
     return c.redirect(appUrl('/login?spotify=state'))
   }
 
@@ -238,7 +249,8 @@ auth.get('/spotify/callback', async (c) => {
     setCookie(c, SESSION_COOKIE, jwt, cookieOptions(7 * 24 * 60 * 60))
 
     return c.redirect(appUrl('/dashboard'))
-  } catch {
+  } catch (error) {
+    console.error('[auth] Falha no callback do Spotify:', error)
     return c.redirect(appUrl('/login?spotify=failed'))
   }
 })

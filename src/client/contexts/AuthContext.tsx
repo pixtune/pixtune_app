@@ -61,9 +61,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
       setAuthError(res.error?.message || 'Não foi possível iniciar a conexão com o Spotify.')
     } catch (err) {
-      setAuthError(
-        err instanceof Error ? err.message : 'Não foi possível iniciar a conexão com o Spotify.'
-      )
+      const message =
+        err instanceof Error && err.message !== 'Failed to fetch'
+          ? err.message
+          : 'Não foi possível falar com a API. Verifique VITE_API_URL, CORS e se a API está online.'
+      setAuthError(message)
     }
   }, [])
 

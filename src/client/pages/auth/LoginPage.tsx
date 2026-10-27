@@ -1,13 +1,27 @@
 import { Button } from '@client/components/ui/Button'
 import { Music } from 'lucide-react'
+import { useSearchParams } from 'react-router-dom'
 import { useAuth } from '@client/contexts/AuthContext'
+
+const SPOTIFY_ERRORS: Record<string, string> = {
+  denied: 'A autorização no Spotify foi cancelada.',
+  invalid: 'A resposta do Spotify foi inválida. Tente novamente.',
+  state:
+    'A validação de segurança do login falhou. Verifique se os cookies estão liberados neste navegador e tente novamente.',
+  failed:
+    'Não foi possível concluir o login. Verifique os logs da API no Render para identificar a causa.',
+  not_configured: 'O Spotify ainda não está configurado na API.',
+}
 
 /**
  * Página de entrada com único botão "Entrar com Spotify".
  * Nenhum formulário. Nenhuma senha.
  */
 export function LoginPage() {
-  const { spotifyLogin } = useAuth()
+  const { spotifyLogin, authError } = useAuth()
+  const [searchParams] = useSearchParams()
+  const spotifyStatus = searchParams.get('spotify')
+  const message = authError || (spotifyStatus ? SPOTIFY_ERRORS[spotifyStatus] : null)
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-pixtune-bg px-4">
@@ -22,6 +36,15 @@ export function LoginPage() {
             Faça login com sua conta do Spotify para começar a usar.
           </p>
         </div>
+
+        {message && (
+          <p
+            role="alert"
+            className="rounded-lg border border-pixtune-danger/40 bg-pixtune-danger/10 px-4 py-3 text-body-sm text-pixtune-danger"
+          >
+            {message}
+          </p>
+        )}
 
         <Button
           variant="primary"

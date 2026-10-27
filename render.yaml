@@ -8,7 +8,7 @@
 # fica versionado neste arquivo.
 services:
   - type: web
-    name: pixtune-api
+    name: pixtune-app
     runtime: node
     plan: free # ajuste para o plano desejado (free sofre spin-down por inatividade)
     buildCommand: npm ci --include=dev && npx prisma generate && npm run build:server
@@ -20,7 +20,7 @@ services:
 
       # Origem da API, SEM o sufixo /api (o código já adiciona /api nas rotas).
       - key: API_URL
-        value: https://pixtune-api.onrender.com
+        value: https://pixtune-app.onrender.com
 
       # Origem do frontend no Cloudflare Pages.
       - key: APP_URL
@@ -32,9 +32,9 @@ services:
 
       # URIs exatas cadastradas no Spotify Developer Dashboard.
       - key: SPOTIFY_REDIRECT_URI
-        value: https://pixtune-api.onrender.com/api/auth/spotify/callback
+        value: https://pixtune-app.onrender.com/api/auth/spotify/callback
       - key: SPOTIFY_CONNECT_REDIRECT_URI
-        value: https://pixtune-api.onrender.com/api/spotify/callback
+        value: https://pixtune-app.onrender.com/api/spotify/callback
 
       # Segredos: preencha no painel do Render.
       - key: DATABASE_URL

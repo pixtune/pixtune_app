@@ -47,12 +47,16 @@ function appUrl(path: string): string {
 }
 
 function cookieOptions() {
+  // O frontend fica no Cloudflare Pages e a API no Render: são sites
+  // diferentes. O cookie do nonce precisa ser SameSite=None + Secure para
+  // sobreviver ao fetch() cross-site que inicia a conexão da conta.
+  const secure = (process.env.API_URL || '').startsWith('https')
   return {
     httpOnly: true,
-    sameSite: 'Lax' as const,
+    sameSite: (secure ? 'None' : 'Lax') as 'None' | 'Lax',
     path: '/',
     maxAge: 600,
-    secure: (process.env.API_URL || '').startsWith('https'),
+    secure,
   }
 }
 
@@ -179,6 +183,11 @@ spotify.get('/start', (c) => {
     !cookieNonce ||
     state.nonce !== cookieNonce
   ) {
+    console.warn('[spotify] Início da conexão rejeitado.', {
+      hasState: Boolean(state),
+      hasUserId: Boolean(state?.userId),
+      hasNonceCookie: Boolean(cookieNonce),
+    })
     return c.redirect(appUrl('/settings?section=spotify&spotify=invalid'))
   }
   if (!isSpotifyConfigured()) {
@@ -198,7 +207,10 @@ spotify.get('/callback', async (c) => {
   const cookieNonce = getCookie(c, OAUTH_NONCE_COOKIE)
   deleteCookie(c, OAUTH_NONCE_COOKIE, { path: '/' })
 
-  if (error) return c.redirect(appUrl('/settings?section=spotify&spotify=denied'))
+  if (error) {
+    console.warn('[spotify] Spotify retornou erro na conexão:', error)
+    return c.redirect(appUrl('/settings?section=spotify&spotify=denied'))
+  }
   if (!code || !stateToken) {
     return c.redirect(appUrl('/settings?section=spotify&spotify=invalid'))
   }
@@ -255,7 +267,8 @@ spotify.get('/callback', async (c) => {
     ])
 
     return c.redirect(appUrl('/settings?section=spotify&spotify=connected'))
-  } catch {
+  } catch (error) {
+    console.error('[spotify] Falha no callback de conexão:', error)
     return c.redirect(appUrl('/settings?section=spotify&spotify=failed'))
   }
 })

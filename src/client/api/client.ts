@@ -4,7 +4,11 @@
  * Nenhum dado mockado - tudo vem do servidor.
  */
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001'
+// A origem da API não inclui /api (as rotas já o adicionam). Normalizamos
+// também valores antigos com barra final ou sufixo /api para evitar /api/api.
+const API_URL = (import.meta.env.VITE_API_URL || 'http://localhost:3001')
+  .replace(/\/+$/, '')
+  .replace(/\/api$/, '')
 
 /** URL base da API, exposta para diagnósticos e integrações. */
 export const API_BASE_URL = API_URL

@@ -138,8 +138,8 @@ Como configurar:
      - `http://localhost:3001/api/auth/spotify/callback`
      - `http://localhost:3001/api/spotify/callback`
    - Produção (substitua pelo domínio real da API no Render):
-     - `https://pixtune-api.onrender.com/api/auth/spotify/callback`
-     - `https://pixtune-api.onrender.com/api/spotify/callback`
+     - `https://pixtune-app.onrender.com/api/auth/spotify/callback`
+     - `https://pixtune-app.onrender.com/api/spotify/callback`
 3. Copie o **Client ID** e o **Client Secret** para o `.env` (ou para o painel do Render):
 
 ```env
@@ -180,7 +180,7 @@ O frontend é estático (`dist/client`) e é publicado no **Cloudflare Pages**. 
 3. **Cloudflare Pages (frontend):**
    - Build Command: `npm run build:client`
    - Output directory: `dist/client`
-   - Variável `VITE_API_URL` = origem da API, por exemplo `https://pixtune-api.onrender.com`
+   - Variável `VITE_API_URL` = origem da API, por exemplo `https://pixtune-app.onrender.com`
      (sem `/api`).
    - Cadastre o domínio do Pages em `CORS_ORIGINS` na API e nas Redirect URIs do Spotify.
 4. **Banco:** antes do primeiro deploy funcional, siga a estratégia de

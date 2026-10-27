@@ -60,8 +60,12 @@ export function SpotifySettings({
         return
       }
       setFeedback(res.error?.message || 'Não foi possível iniciar a conexão com o Spotify.')
-    } catch {
-      setFeedback('Não foi possível iniciar a conexão. Verifique se a API está no ar.')
+    } catch (err) {
+      const message =
+        err instanceof Error && err.message !== 'Failed to fetch'
+          ? err.message
+          : 'Não foi possível falar com a API. Verifique VITE_API_URL, CORS e se a API está online.'
+      setFeedback(message)
     } finally {
       setBusy(false)
     }

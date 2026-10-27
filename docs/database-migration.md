@@ -11,11 +11,11 @@ Este documento descreve a estratégia de migração do PostgreSQL usado pela API
 | `JWT_SECRET` | Sim | Chave longa e aleatória. Gere com `openssl rand -hex 32` e nunca versione. |
 | `SPOTIFY_CLIENT_ID` | Sim | Client ID do app no Spotify Developer Dashboard. |
 | `SPOTIFY_CLIENT_SECRET` | Sim | Client Secret do app. Nunca vai para o frontend. |
-| `API_URL` | Sim | Origem da API **sem** `/api`, por exemplo `https://pixtune-api.onrender.com`. |
+| `API_URL` | Sim | Origem da API **sem** `/api`, por exemplo `https://pixtune-app.onrender.com`. |
 | `APP_URL` | Sim | Origem do frontend, por exemplo `https://pixtune-app.pages.dev`. |
 | `CORS_ORIGINS` | Sim | Origens do frontend separadas por vírgula. |
-| `SPOTIFY_REDIRECT_URI` | Recomendada | `https://pixtune-api.onrender.com/api/auth/spotify/callback` |
-| `SPOTIFY_CONNECT_REDIRECT_URI` | Recomendada | `https://pixtune-api.onrender.com/api/spotify/callback` |
+| `SPOTIFY_REDIRECT_URI` | Recomendada | `https://pixtune-app.onrender.com/api/auth/spotify/callback` |
+| `SPOTIFY_CONNECT_REDIRECT_URI` | Recomendada | `https://pixtune-app.onrender.com/api/spotify/callback` |
 
 Sem `SPOTIFY_REDIRECT_URI` e `SPOTIFY_CONNECT_REDIRECT_URI`, o código deriva as URLs de
 `API_URL`. Definir as duas variáveis explicitamente evita divergência com o Spotify Dashboard.
