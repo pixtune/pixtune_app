@@ -45,7 +45,7 @@ export function getSpotifyConfig(): SpotifyConfig | null {
   const apiUrl = (process.env.API_URL || 'http://localhost:3001').replace(/\/$/, '')
   const appUrl = (process.env.APP_URL || 'http://localhost:3000').replace(/\/$/, '')
   const redirectUri = (
-    process.env.SPOTIFY_REDIRECT_URI || `${apiUrl}/api/spotify/callback`
+    process.env.SPOTIFY_REDIRECT_URI || `${apiUrl}/api/auth/spotify/callback`
   ).trim()
 
   return { clientId, clientSecret, apiUrl, appUrl, redirectUri }

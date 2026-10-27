@@ -17,12 +17,12 @@ datasource db {
 
 model User {
   id            String    @id @default(cuid())
-  email         String    @unique
+  spotifyId     String    @unique // ID único do Spotify
   name          String?
-  passwordHash  String
   avatarUrl     String?
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  email         String?      // Email do Spotify (opcional, para referência)
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
 
   sessions      Session[]
   settings      Settings?

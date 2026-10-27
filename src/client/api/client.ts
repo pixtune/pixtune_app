@@ -61,25 +61,40 @@ async function request<T = unknown>(
 }
 
 // ============================================================
-// Auth
+// Auth — apenas Entrar com Spotify
 // ============================================================
 
+export interface SpotifyUser {
+  id: string
+  spotifyId: string
+  name?: string | null
+  email?: string | null
+  avatarUrl?: string | null
+}
+
 export const apiAuth = {
-  register: (data: { email: string; password: string; name?: string }) =>
-    request<{ user: { id: string; email: string; name?: string }; token: string }>('/api/auth/register', {
+  /** Inicia o fluxo OAuth do Spotify e retorna a URL de autorização. */
+  connectUrl: () =>
+    request<{ url: string; redirectUri: string }>('/api/auth/spotify/connect-url', {
       method: 'POST',
-      body: JSON.stringify(data),
     }),
 
-  login: (data: { email: string; password: string }) =>
-    request<{ user: { id: string; email: string; name?: string }; token: string }>('/api/auth/login', {
-      method: 'POST',
-      body: JSON.stringify(data),
-    }),
+  /** Recupera o usuário da sessão atual (exigido header Authorization Bearer). */
+  me: () => request<{ user: SpotifyUser }>('/api/auth/me'),
 
-  me: () => request<{ user: { id: string; email: string; name?: string; avatarUrl?: string } }>('/api/auth/me'),
-
+  /** Encerra a sessão. */
   logout: () => request('/api/auth/logout', { method: 'POST' }),
+}
+
+/** Redireciona o navegador para a tela de autorização do Spotify. */
+export function spotifyLogin() {
+  apiAuth.connectUrl().then((res) => {
+    if (res.success && res.data?.url) {
+      window.location.href = res.data.url
+    } else {
+      console.error(res.error?.message || 'Não foi possível iniciar a conexão com o Spotify.')
+    }
+  })
 }
 
 // ============================================================

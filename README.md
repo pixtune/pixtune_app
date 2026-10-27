@@ -44,7 +44,7 @@ A detecção é heurística. Ela foi feita para ser previsível e conservadora, 
 | Estado | Context API |
 | Roteamento | React Router 6 |
 | Backend | Hono (Node.js puro) |
-| Banco | SQLite via Prisma ORM |
+| Banco | PostgreSQL via Prisma ORM |
 | Autenticação | E-mail/senha (JWT + sessões no banco, `scrypt`) |
 | Validação | Zod |
 | Detecção musical | Spotify Web API (Search) |
