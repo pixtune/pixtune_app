@@ -11,7 +11,9 @@ services:
     name: pixtune-app
     runtime: node
     plan: free # ajuste para o plano desejado (free sofre spin-down por inatividade)
-    buildCommand: npm ci --include=dev && npx prisma generate && npm run build:server
+    # migrate deploy aplica as migrations versionadas antes do build. Se o
+    # banco estiver sem schema, o deploy falha em vez de subir uma API quebrada.
+    buildCommand: npm ci --include=dev && npx prisma generate && npx prisma migrate deploy && npm run build:server
     startCommand: npm start
     healthCheckPath: /health
     envVars:
@@ -31,10 +33,12 @@ services:
         value: https://pixtune-app.pages.dev
 
       # URIs exatas cadastradas no Spotify Developer Dashboard.
+      # Apontam para o proxy same-origin do Cloudflare Pages para que o cookie
+      # de sessão seja first-party em Brave/Safari/Firefox (ver functions/api).
       - key: SPOTIFY_REDIRECT_URI
-        value: https://pixtune-app.onrender.com/api/auth/spotify/callback
+        value: https://pixtune-app.pages.dev/api/auth/spotify/callback
       - key: SPOTIFY_CONNECT_REDIRECT_URI
-        value: https://pixtune-app.onrender.com/api/spotify/callback
+        value: https://pixtune-app.pages.dev/api/spotify/callback
 
       # Segredos: preencha no painel do Render.
       - key: DATABASE_URL

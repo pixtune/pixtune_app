@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   fetchPlaylistTracks,
+  fetchSpotifyProfile,
   getSpotifyConfig,
+  missingSpotifyScopes,
   normalizeSpotifyPlaylist,
   normalizeSpotifyTrack,
   scoreSpotifyTrack,
@@ -190,5 +192,56 @@ describe('getSpotifyConfig', () => {
       'https://pixtune-app.onrender.com/api/auth/spotify/callback'
     )
     expect(config?.connectRedirectUri).toBe('https://pixtune-app.onrender.com/api/spotify/callback')
+  })
+})
+
+describe('erros da Web API do Spotify', () => {
+  const jsonResponse = (status: number, body: unknown): Response =>
+    new Response(JSON.stringify(body), {
+      status,
+      headers: { 'content-type': 'application/json' },
+    })
+
+  it('identifica 403 de usuário não autorizado no Development Mode', async () => {
+    const fetchImpl = (async () =>
+      jsonResponse(403, {
+        error: {
+          status: 403,
+          message: 'User not registered in the Developer Dashboard',
+        },
+      })) as FetchLike
+
+    await expect(fetchSpotifyProfile('token', fetchImpl)).rejects.toMatchObject({
+      name: 'SpotifyError',
+      code: 'SPOTIFY_USER_NOT_ALLOWED',
+      status: 403,
+      endpoint: '/me',
+    })
+  })
+
+  it('identifica 403 por escopo insuficiente', async () => {
+    const fetchImpl = (async () =>
+      jsonResponse(403, {
+        error: {
+          status: 403,
+          message: 'Insufficient client scope',
+        },
+      })) as FetchLike
+
+    await expect(fetchSpotifyProfile('token', fetchImpl)).rejects.toMatchObject({
+      code: 'SPOTIFY_INSUFFICIENT_SCOPE',
+      status: 403,
+      endpoint: '/me',
+    })
+  })
+
+  it('lista os escopos solicitados que não foram concedidos', () => {
+    expect(missingSpotifyScopes('user-read-private playlist-read-private')).toEqual([
+      'streaming',
+      'user-read-email',
+      'user-read-playback-state',
+      'user-modify-playback-state',
+      'playlist-read-collaborative',
+    ])
   })
 })

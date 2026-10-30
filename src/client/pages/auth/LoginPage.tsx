@@ -5,12 +5,23 @@ import { useAuth } from '@client/contexts/AuthContext'
 
 const SPOTIFY_ERRORS: Record<string, string> = {
   denied: 'A autorização no Spotify foi cancelada.',
-  invalid: 'A resposta do Spotify foi inválida. Tente novamente.',
+  invalid:
+    'A resposta do Spotify foi inválida ou o cookie de segurança não chegou ao servidor. Tente novamente.',
   state:
-    'A validação de segurança do login falhou. Verifique se os cookies estão liberados neste navegador e tente novamente.',
+    'A validação de segurança do login falhou. O cookie de segurança não foi enviado; tente novamente em uma janela normal do navegador.',
   failed:
-    'Não foi possível concluir o login. Verifique os logs da API no Render para identificar a causa.',
+    'Não foi possível concluir o login. A API registrou a etapa exata da falha; tente novamente em instantes.',
   not_configured: 'O Spotify ainda não está configurado na API.',
+  not_allowed:
+    'Sua conta Spotify ainda não está autorizada neste aplicativo. Peça ao responsável para adicionar seu nome e e-mail em Spotify Developer Dashboard → Users Management (o app está em Development Mode).',
+  scope:
+    'O Spotify não concedeu todas as permissões necessárias. Tente novamente e aceite todas as permissões solicitadas.',
+  forbidden:
+    'O Spotify recusou a operação (403). Verifique se o app está em Development Mode e se sua conta está na lista de usuários autorizados.',
+  rate_limited: 'O Spotify limitou temporariamente as requisições. Tente novamente em alguns minutos.',
+  database:
+    'O banco de dados da API não está com as migrations aplicadas. O administrador precisa executar prisma migrate deploy no Render.',
+  session: 'Não foi possível criar a sessão do PixTune. Tente novamente.',
 }
 
 /**

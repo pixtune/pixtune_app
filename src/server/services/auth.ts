@@ -9,6 +9,7 @@
  * passwordHash e o email do Spotify é opcional e não é único.
  */
 
+import crypto from 'crypto'
 import JWT, { type SignOptions } from 'jsonwebtoken'
 import prisma from '../lib/prisma.js'
 
@@ -30,7 +31,12 @@ export interface AuthUser {
 
 /** Gera JWT */
 export function generateToken(payload: TokenPayload, expiresIn = '7d'): string {
-  return JWT.sign(payload, JWT_SECRET, { expiresIn: expiresIn as SignOptions['expiresIn'] })
+  return JWT.sign(payload, JWT_SECRET, {
+    expiresIn: expiresIn as SignOptions['expiresIn'],
+    // Sem o jti, dois logins do mesmo usuário no mesmo segundo geram o mesmo
+    // JWT (iat com precisão de segundos), colidindo com Session.token unique.
+    jwtid: crypto.randomUUID(),
+  })
 }
 
 /** Valida JWT e devolve um payload utilizável */

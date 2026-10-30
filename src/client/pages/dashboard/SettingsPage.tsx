@@ -171,9 +171,14 @@ export function SettingsPage() {
         connected: { kind: 'success' as const, text: 'Conta do Spotify conectada com sucesso.' },
         denied: { kind: 'error' as const, text: 'Autorização do Spotify cancelada.' },
         invalid: { kind: 'error' as const, text: 'Resposta inválida do Spotify. Tente conectar novamente.' },
-        state: { kind: 'error' as const, text: 'A sessão de conexão expirou. Tente novamente.' },
-        failed: { kind: 'error' as const, text: 'Não foi possível conectar a conta do Spotify. Tente novamente.' },
+        state: { kind: 'error' as const, text: 'A sessão de conexão expirou ou o cookie de segurança não foi enviado. Tente novamente.' },
+        failed: { kind: 'error' as const, text: 'Não foi possível conectar a conta do Spotify. A API registrou a etapa exata da falha.' },
         not_configured: { kind: 'error' as const, text: 'OAuth do Spotify não configurado no servidor.' },
+        not_allowed: { kind: 'error' as const, text: 'Sua conta Spotify não está autorizada no app (Development Mode). Peça para adicionar seu e-mail em Users Management.' },
+        scope: { kind: 'error' as const, text: 'O Spotify não concedeu todas as permissões necessárias. Tente novamente e aceite todas.' },
+        forbidden: { kind: 'error' as const, text: 'O Spotify recusou a conexão (403). Verifique o Development Mode e a lista de usuários autorizados.' },
+        rate_limited: { kind: 'error' as const, text: 'O Spotify limitou temporariamente as requisições. Tente novamente em alguns minutos.' },
+        database: { kind: 'error' as const, text: 'O banco de dados da API não está migrado. O administrador precisa aplicar as migrations.' },
       }[spotifyParam]) ||
     null
 

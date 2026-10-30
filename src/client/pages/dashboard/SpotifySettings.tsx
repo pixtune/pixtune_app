@@ -13,6 +13,7 @@ import { Card } from '@client/components/ui/Card'
 import {
   API_BASE_URL,
   apiSpotify,
+  isNetworkError,
   type SpotifyPlaylist,
   type SpotifyStatus,
 } from '@client/api/client'
@@ -61,10 +62,11 @@ export function SpotifySettings({
       }
       setFeedback(res.error?.message || 'Não foi possível iniciar a conexão com o Spotify.')
     } catch (err) {
-      const message =
-        err instanceof Error && err.message !== 'Failed to fetch'
+      const message = isNetworkError(err)
+        ? 'Não foi possível falar com a API. Verifique VITE_API_URL, CORS e se a API está online.'
+        : err instanceof Error
           ? err.message
-          : 'Não foi possível falar com a API. Verifique VITE_API_URL, CORS e se a API está online.'
+          : 'Não foi possível iniciar a conexão com o Spotify.'
       setFeedback(message)
     } finally {
       setBusy(false)

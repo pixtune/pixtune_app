@@ -2,6 +2,7 @@ import './env.js'
 import { createServer, type IncomingMessage } from 'http'
 import { parse } from 'url'
 import { app } from './index.js'
+import { responseHeadersForNode } from './lib/nodeHeaders.js'
 
 const port = process.env.PORT || 3001
 
@@ -43,7 +44,9 @@ const server = createServer(async (req, res) => {
 
     const response = await app.fetch(request)
 
-    res.writeHead(response.status, Object.fromEntries(response.headers.entries()))
+    // Preserva múltiplos Set-Cookie (callback apaga o nonce e define a sessão
+    // na mesma resposta).
+    res.writeHead(response.status, responseHeadersForNode(response.headers))
 
     const text = await response.text()
     res.end(text)

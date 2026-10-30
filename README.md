@@ -137,9 +137,9 @@ Como configurar:
    - Desenvolvimento:
      - `http://localhost:3001/api/auth/spotify/callback`
      - `http://localhost:3001/api/spotify/callback`
-   - Produção (substitua pelo domínio real da API no Render):
-     - `https://pixtune-app.onrender.com/api/auth/spotify/callback`
-     - `https://pixtune-app.onrender.com/api/spotify/callback`
+   - Produção (domínio público do Cloudflare Pages, que faz proxy para o Render):
+     - `https://pixtune-app.pages.dev/api/auth/spotify/callback`
+     - `https://pixtune-app.pages.dev/api/spotify/callback`
 3. Copie o **Client ID** e o **Client Secret** para o `.env` (ou para o painel do Render):
 
 ```env
@@ -160,6 +160,12 @@ necessário para registrar o dispositivo Spotify Connect criado pelo Web Playbac
 > streamers, cada instalação pode usar credenciais próprias ou o app precisa de aprovação do Spotify.
 > O uso em transmissão pública/comercial é restrito pelos termos do Spotify; o PixTune usa apenas
 > APIs oficiais, mas a conta/app podem ser limitados.
+>
+> Um `403` em `GET https://api.spotify.com/v1/me` normalmente **não é falta de escopo**. Em
+> Development Mode, o usuário precisa estar em **Users Management** no Spotify Dashboard e o
+> dono do app precisa ter Spotify Premium ativo. Para uso público, solicite **Extended Quota Mode**.
+> Desde fevereiro de 2026, alguns campos de `GET /me` (como `email`, `country` e `product`) podem
+> vir ausentes em apps de Development Mode; o PixTune trata `email` como opcional.
 
 As credenciais do Live Pix são informadas em **Configurações → Live Pix** e ficam no banco
 PostgreSQL. Nenhuma credencial real vem preenchida no repositório.
@@ -172,19 +178,26 @@ O frontend é estático (`dist/client`) e é publicado no **Cloudflare Pages**. 
 1. **GitHub:** envie o código para o repositório conectado ao Render e ao Cloudflare Pages.
 2. **Render (API):**
    - Use o Blueprint `render.yaml` ou crie um **Web Service** com runtime Node.
-   - Build Command: `npm ci --include=dev && npx prisma generate && npm run build:server`
+   - Build Command: `npm ci --include=dev && npx prisma generate && npx prisma migrate deploy && npm run build:server`
    - Start Command: `npm start`
    - Health Check Path: `/health`
    - Configure as variáveis listadas em [`docs/database-migration.md`](docs/database-migration.md).
    - `API_URL` deve ser a origem da API **sem `/api`**.
-3. **Cloudflare Pages (frontend):**
+   - As Redirect URIs do Spotify apontam para o domínio público do Pages, não
+     diretamente para o Render (ver abaixo).
+3. **Cloudflare Pages (frontend + proxy /api):**
    - Build Command: `npm run build:client`
    - Output directory: `dist/client`
-   - Variável `VITE_API_URL` = origem da API, por exemplo `https://pixtune-app.onrender.com`
-     (sem `/api`).
+   - O diretório `functions/` é publicado pelo Pages e faz proxy same-origin de
+     `/api/*` para o Render. Opcionalmente defina `API_ORIGIN` nas variáveis do
+     Pages; o padrão é `https://pixtune-app.onrender.com`.
+   - **Não** configure `VITE_API_URL` apontando para `onrender.com`. Deixe vazio
+     (o cliente usa a mesma origem da página) ou use a origem pública do Pages.
+     Isso é o que mantém os cookies first-party no Brave/Safari/Firefox.
    - Cadastre o domínio do Pages em `CORS_ORIGINS` na API e nas Redirect URIs do Spotify.
 4. **Banco:** antes do primeiro deploy funcional, siga a estratégia de
    [`docs/database-migration.md`](docs/database-migration.md). Não use `prisma db push` em produção.
+   O `render.yaml` executa `prisma migrate deploy` no build a cada deploy.
 
 > O `render.yaml` não publica o frontend. O frontend é responsabilidade do Cloudflare Pages.
 
@@ -230,6 +243,7 @@ src/
     └── services/            # auth, googleOAuth, livepix, rules, spotify, spotifySongRequest
  prisma/schema.prisma         # User, Session, Settings, Integration, DonationEvent, DonationRule, QueueItem...
  prisma/migrations/           # migrações versionadas do PostgreSQL
+ functions/api/[[path]].js    # proxy same-origin Cloudflare Pages → Render
  docs/database-migration.md   # estratégia de migração e variáveis de produção
 ```
 
@@ -244,9 +258,10 @@ src/
   `Authorization: Bearer ...`.
 - Toda rota autenticada valida o JWT **e** a sessão no banco; logout remove a sessão.
 - Todas as consultas usam o `userId` da sessão: um streamer não acessa dados de outro.
-- Em produção, com frontend e API em domínios diferentes, o cookie usa `SameSite=None; Secure`.
-  Navegadores que bloqueiam cookies de terceiros podem exigir um domínio compartilhado
-  (por exemplo, `app.seudominio.com` e `api.seudominio.com`).
+- Em produção, o navegador acessa apenas `https://pixtune-app.pages.dev`. O Pages
+  encaminha `/api/*` para o Render via `functions/api/[[path]].js`, então o cookie
+  `pixtune_token` é **first-party** e funciona no Brave, Safari e Firefox sem
+  desativar proteções de rastreamento.
 
 ---
 

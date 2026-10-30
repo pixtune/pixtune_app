@@ -1,6 +1,5 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
-import { logger } from 'hono/logger'
 import { prettyJSON } from 'hono/pretty-json'
 import authRoutes from './routes/auth.js'
 import donationRoutes from './routes/donation.js'
@@ -20,7 +19,14 @@ const corsOrigins = (process.env.CORS_ORIGINS || 'http://localhost:3000,http://1
   .filter(Boolean)
 
 // Middleware
-app.use('*', logger())
+// Não usamos o logger padrão do Hono porque ele registra a query string
+// completa, incluindo o authorization code e o state do OAuth. Registramos
+// somente o pathname.
+app.use('*', async (c, next) => {
+  const startedAt = Date.now()
+  await next()
+  console.info(`${c.req.method} ${c.req.path} ${c.res.status} ${Date.now() - startedAt}ms`)
+})
 app.use('*', prettyJSON())
 app.use('*', cors({
   origin: corsOrigins,

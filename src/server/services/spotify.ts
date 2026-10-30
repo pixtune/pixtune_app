@@ -94,10 +94,67 @@ export function buildSpotifyAuthUrl(options: {
 }
 
 export class SpotifyError extends Error {
-  constructor(message: string, readonly code: string) {
+  constructor(
+    message: string,
+    readonly code: string,
+    /** HTTP status retornado pelo Spotify, quando houver. */
+    readonly status?: number,
+    /** Endpoint/caminho do Spotify que falhou (sem query string). */
+    readonly endpoint?: string,
+    /** Código interno do corpo de erro do Spotify, quando houver. */
+    readonly spotifyReason?: string
+  ) {
     super(message)
     this.name = 'SpotifyError'
   }
+}
+
+function spotifyErrorMessage(error: unknown): { message?: string; reason?: string } {
+  if (typeof error === 'string') return { message: error }
+  if (!error || typeof error !== 'object') return {}
+
+  const value = error as { message?: unknown; reason?: unknown }
+  return {
+    message: typeof value.message === 'string' ? value.message : undefined,
+    reason: typeof value.reason === 'string' ? value.reason : undefined,
+  }
+}
+
+function classifySpotifyForbidden(message?: string, reason?: string): string {
+  const text = `${message || ''} ${reason || ''}`.toLowerCase()
+
+  if (
+    text.includes('not registered') ||
+    text.includes('developer dashboard') ||
+    text.includes('allowlist') ||
+    text.includes('allow list')
+  ) {
+    return 'SPOTIFY_USER_NOT_ALLOWED'
+  }
+  if (text.includes('insufficient client scope') || text.includes('scope') || text.includes('permission')) {
+    return 'SPOTIFY_INSUFFICIENT_SCOPE'
+  }
+  return 'SPOTIFY_FORBIDDEN'
+}
+
+function statusToCode(status: number, message?: string, reason?: string): string {
+  if (status === 401) return 'UNAUTHORIZED'
+  if (status === 403) return classifySpotifyForbidden(message, reason)
+  if (status === 404) return 'NOT_FOUND'
+  if (status === 429) return 'SPOTIFY_RATE_LIMITED'
+  return 'SPOTIFY_FAILED'
+}
+
+export function parseSpotifyScopes(scope: string | null | undefined): string[] {
+  return (scope || '')
+    .split(/\s+/)
+    .map((value) => value.trim())
+    .filter(Boolean)
+}
+
+export function missingSpotifyScopes(scope: string | null | undefined): string[] {
+  const granted = new Set(parseSpotifyScopes(scope))
+  return SPOTIFY_SCOPES.filter((value) => !granted.has(value))
 }
 
 export interface SpotifyTokenResponse {
@@ -144,7 +201,10 @@ export async function exchangeSpotifyCode(
   if (!res.ok || !data.access_token) {
     throw new SpotifyError(
       data.error_description || data.error || `Spotify respondeu ${res.status}`,
-      'TOKEN_EXCHANGE_FAILED'
+      'TOKEN_EXCHANGE_FAILED',
+      res.status,
+      '/api/token',
+      data.error
     )
   }
 
@@ -181,7 +241,10 @@ export async function refreshSpotifyToken(
   if (!res.ok || !data.access_token) {
     throw new SpotifyError(
       data.error_description || data.error || `Spotify respondeu ${res.status}`,
-      'REFRESH_FAILED'
+      'REFRESH_FAILED',
+      res.status,
+      '/api/token',
+      data.error
     )
   }
 
@@ -204,13 +267,18 @@ async function spotifyRequest<T>(
   })
 
   const data = (await res.json().catch(() => ({}))) as T & {
-    error?: { message?: string; status?: number }
+    error?: { message?: string; status?: number; reason?: string } | string
   }
 
   if (!res.ok) {
+    const spotifyError = spotifyErrorMessage(data?.error)
+    const message = spotifyError.message || `Spotify respondeu ${res.status}`
     throw new SpotifyError(
-      data?.error?.message || `Spotify respondeu ${res.status}`,
-      res.status === 401 ? 'UNAUTHORIZED' : res.status === 404 ? 'NOT_FOUND' : 'SPOTIFY_FAILED'
+      message,
+      statusToCode(res.status, spotifyError.message, spotifyError.reason),
+      res.status,
+      path.split('?')[0],
+      spotifyError.reason
     )
   }
 
@@ -525,7 +593,11 @@ export async function getSpotifyAccessToken(
     try {
       refreshed = await refreshSpotifyToken(integration.refreshToken, fetchImpl)
     } catch (error) {
-      if (error instanceof SpotifyError && error.code === 'REFRESH_FAILED') {
+      if (
+        error instanceof SpotifyError &&
+        error.code === 'REFRESH_FAILED' &&
+        (error.status === 400 || error.status === 401)
+      ) {
         throw new SpotifyError('Sessão do Spotify expirada. Reconecte a conta.', 'NOT_CONNECTED')
       }
       throw error
@@ -536,7 +608,9 @@ export async function getSpotifyAccessToken(
         accessToken: refreshed.access_token,
         refreshToken: refreshed.refresh_token || integration.refreshToken,
         expiresAt: new Date(Date.now() + refreshed.expires_in * 1000),
-        scopes: JSON.stringify(refreshed.scope ? refreshed.scope.split(' ') : SPOTIFY_SCOPES),
+        scopes: JSON.stringify(
+          refreshed.scope ? parseSpotifyScopes(refreshed.scope) : SPOTIFY_SCOPES
+        ),
       },
     })
     return refreshed.access_token

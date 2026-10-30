@@ -6,17 +6,34 @@
 
 // A origem da API não inclui /api (as rotas já o adicionam). Normalizamos
 // também valores antigos com barra final ou sufixo /api para evitar /api/api.
-const API_URL = (import.meta.env.VITE_API_URL || 'http://localhost:3001')
+//
+// O padrão é a mesma origem da página. Em produção o Cloudflare Pages faz
+// proxy de /api para o Render, então o cookie de sessão é first-party e
+// funciona em navegadores com proteção contra cookies de terceiros (Brave).
+const DEFAULT_API_URL =
+  typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3001'
+const API_URL = (import.meta.env.VITE_API_URL || DEFAULT_API_URL)
   .replace(/\/+$/, '')
   .replace(/\/api$/, '')
 
 /** URL base da API, exposta para diagnósticos e integrações. */
 export const API_BASE_URL = API_URL
 
-interface ApiError extends Error {
+export interface ApiError extends Error {
   status?: number
   code?: string
   details?: unknown
+  kind?: 'network' | 'http'
+}
+
+/** True quando a requisição nem chegou a receber uma resposta HTTP. */
+export function isNetworkError(error: unknown): boolean {
+  return error instanceof Error && (error as ApiError).kind === 'network'
+}
+
+/** True quando a API respondeu 401 (sessão ausente/expirada). */
+export function isUnauthorized(error: unknown): boolean {
+  return error instanceof Error && (error as ApiError).status === 401
 }
 
 async function request<T = unknown>(
@@ -24,27 +41,36 @@ async function request<T = unknown>(
   options: RequestInit = {}
 ): Promise<{ success: boolean; data?: T; error?: { code: string; message: string; details?: unknown } }> {
   const url = `${API_URL}${path}`
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-  }
+  const headers: Record<string, string> = {}
   if (options.headers) {
     new Headers(options.headers).forEach((value, key) => {
       headers[key] = value
     })
   }
+  if (options.body !== undefined && options.body !== null) {
+    headers['Content-Type'] = headers['Content-Type'] || 'application/json'
+  }
 
-  // Adicionar token de autenticação se disponível
+  // Adicionar token de autenticação se disponível. O servidor tenta o Bearer
+  // e, se ele estiver inválido, ainda aceita o cookie HttpOnly válido.
   const token = typeof localStorage !== 'undefined' ? localStorage.getItem('pixtune_token') : null
   if (token) {
     headers['Authorization'] = `Bearer ${token}`
   }
 
-  const res = await fetch(url, {
-    // Necessário para o cookie HttpOnly do OAuth do Spotify entre a web e a API.
-    credentials: 'include',
-    ...options,
-    headers,
-  })
+  let res: Response
+  try {
+    res = await fetch(url, {
+      // Necessário para o cookie HttpOnly do OAuth do Spotify.
+      credentials: 'include',
+      ...options,
+      headers,
+    })
+  } catch {
+    const error: ApiError = new Error('Falha de rede ao falar com a API.')
+    error.kind = 'network'
+    throw error
+  }
 
   let body: any
   try {
@@ -56,6 +82,7 @@ async function request<T = unknown>(
   if (!res.ok) {
     const error: ApiError = new Error(body?.error?.message || `Request failed: ${res.status}`)
     error.status = res.status
+    error.kind = 'http'
     error.code = body?.error?.code
     error.details = body?.error?.details
     throw error
@@ -92,13 +119,17 @@ export const apiAuth = {
 
 /** Redireciona o navegador para a tela de autorização do Spotify. */
 export function spotifyLogin() {
-  apiAuth.connectUrl().then((res) => {
-    if (res.success && res.data?.url) {
-      window.location.href = res.data.url
-    } else {
-      console.error(res.error?.message || 'Não foi possível iniciar a conexão com o Spotify.')
-    }
-  })
+  apiAuth.connectUrl()
+    .then((res) => {
+      if (res.success && res.data?.url) {
+        window.location.href = res.data.url
+      } else {
+        console.error(res.error?.message || 'Não foi possível iniciar a conexão com o Spotify.')
+      }
+    })
+    .catch((error) => {
+      console.error(isNetworkError(error) ? 'Falha de rede ao iniciar o Spotify.' : error)
+    })
 }
 
 // ============================================================

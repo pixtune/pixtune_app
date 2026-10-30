@@ -14,11 +14,13 @@ Este documento descreve a estratégia de migração do PostgreSQL usado pela API
 | `API_URL` | Sim | Origem da API **sem** `/api`, por exemplo `https://pixtune-app.onrender.com`. |
 | `APP_URL` | Sim | Origem do frontend, por exemplo `https://pixtune-app.pages.dev`. |
 | `CORS_ORIGINS` | Sim | Origens do frontend separadas por vírgula. |
-| `SPOTIFY_REDIRECT_URI` | Recomendada | `https://pixtune-app.onrender.com/api/auth/spotify/callback` |
-| `SPOTIFY_CONNECT_REDIRECT_URI` | Recomendada | `https://pixtune-app.onrender.com/api/spotify/callback` |
+| `SPOTIFY_REDIRECT_URI` | Recomendada | `https://pixtune-app.pages.dev/api/auth/spotify/callback` |
+| `SPOTIFY_CONNECT_REDIRECT_URI` | Recomendada | `https://pixtune-app.pages.dev/api/spotify/callback` |
 
 Sem `SPOTIFY_REDIRECT_URI` e `SPOTIFY_CONNECT_REDIRECT_URI`, o código deriva as URLs de
-`API_URL`. Definir as duas variáveis explicitamente evita divergência com o Spotify Dashboard.
+`API_URL`. Em produção, defina explicitamente as URLs do **Cloudflare Pages** (proxy
+same-origin de `/api/*`); não use o domínio direto do Render, ou o cookie de sessão
+volta a ser bloqueado como cookie de terceiro em Brave/Safari/Firefox.
 
 > O schema usa `provider = "postgresql"`. Um banco antigo com `DATABASE_URL="file:..."` (SQLite)
 > não é compatível: exporte os dados e importe em um PostgreSQL antes de aplicar as migrações.
@@ -42,6 +44,10 @@ Sem `SPOTIFY_REDIRECT_URI` e `SPOTIFY_CONNECT_REDIRECT_URI`, o código deriva as
    ```
 
 Isso cria todas as tabelas e índices do schema atual.
+
+O `render.yaml` também executa `npx prisma migrate deploy` no build. Assim, um novo deploy
+não sobe a API sem schema: se a migração falhar, o build é interrompido. O comando é
+idempotente e não apaga dados.
 
 ## Cenário B — banco existente com o schema antigo (email + senha)
 

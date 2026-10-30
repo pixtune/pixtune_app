@@ -23,12 +23,15 @@ import {
   getSpotifyAccessToken,
   getSpotifyConfig,
   isSpotifyConfigured,
+  missingSpotifyScopes,
+  parseSpotifyScopes,
   searchSpotifyTracks,
   spotifyConnectRedirectUri,
   SpotifyError,
   type SpotifyProfile,
 } from '../services/spotify.js'
 import { extractSpotifyPlaylistId, extractSpotifyTrackId } from '../../shared/spotify.js'
+import { describeError, logEvent } from '../lib/logger.js'
 
 const spotify = new Hono()
 
@@ -46,11 +49,16 @@ function appUrl(path: string): string {
   return `${base}${path}`
 }
 
+function isProduction(): boolean {
+  return process.env.NODE_ENV === 'production'
+}
+
 function cookieOptions() {
-  // O frontend fica no Cloudflare Pages e a API no Render: são sites
-  // diferentes. O cookie do nonce precisa ser SameSite=None + Secure para
-  // sobreviver ao fetch() cross-site que inicia a conexão da conta.
-  const secure = (process.env.API_URL || '').startsWith('https')
+  // Em produção o frontend e a API são expostos no mesmo domínio pelo proxy
+  // do Cloudflare Pages. Ainda usamos SameSite=None + Secure para manter
+  // compatibilidade com acesso direto à API em HTTPS; em desenvolvimento
+  // local usamos Lax para funcionar em http://localhost.
+  const secure = isProduction()
   return {
     httpOnly: true,
     sameSite: (secure ? 'None' : 'Lax') as 'None' | 'Lax',
@@ -110,6 +118,20 @@ function errorResponse(c: any, code: string, message: string, status: 400 | 401 
   return c.json({ success: false, error: { code, message } }, status)
 }
 
+function connectionErrorStatus(error: unknown): string {
+  if (error instanceof SpotifyError) {
+    if (error.code === 'SPOTIFY_USER_NOT_ALLOWED') return 'not_allowed'
+    if (error.code === 'SPOTIFY_INSUFFICIENT_SCOPE') return 'scope'
+    if (error.code === 'SPOTIFY_FORBIDDEN') return 'forbidden'
+    if (error.code === 'SPOTIFY_RATE_LIMITED') return 'rate_limited'
+    if (error.code === 'TOKEN_EXCHANGE_FAILED') return 'failed'
+  }
+
+  const code = (error as { code?: unknown } | null)?.code
+  if (typeof code === 'string' && code.startsWith('P')) return 'database'
+  return 'failed'
+}
+
 // ---------------------------------------------------------------
 // Status
 // ---------------------------------------------------------------
@@ -162,10 +184,18 @@ spotify.post('/connect-url', authMiddleware, (c) => {
   // conta errada (OAuth login CSRF).
   setCookie(c, OAUTH_NONCE_COOKIE, nonce, cookieOptions())
 
+  logEvent('info', 'spotify.connect_url', {
+    userId,
+    origin: c.req.header('origin') || null,
+    cookieSecure: isProduction(),
+  })
+
   return c.json({
     success: true,
     data: {
-      url: `${config.apiUrl}/api/spotify/start?ct=${encodeURIComponent(startToken)}`,
+      // URL relativa para manter o nonce em contexto first-party no navegador
+      // (Cloudflare Pages em produção, proxy do Vite em desenvolvimento).
+      url: `/api/spotify/start?ct=${encodeURIComponent(startToken)}`,
       redirectUri: config.connectRedirectUri,
     },
   })
@@ -183,7 +213,16 @@ spotify.get('/start', (c) => {
     !cookieNonce ||
     state.nonce !== cookieNonce
   ) {
-    console.warn('[spotify] Início da conexão rejeitado.', {
+    logEvent('warn', 'spotify.start_rejected', {
+      reason: !state
+        ? 'invalid_state'
+        : state.kind !== 'spotify_start'
+          ? 'wrong_state_kind'
+          : !state.userId
+            ? 'missing_user'
+            : !cookieNonce
+              ? 'missing_nonce_cookie'
+              : 'nonce_mismatch',
       hasState: Boolean(state),
       hasUserId: Boolean(state?.userId),
       hasNonceCookie: Boolean(cookieNonce),
@@ -208,10 +247,16 @@ spotify.get('/callback', async (c) => {
   deleteCookie(c, OAUTH_NONCE_COOKIE, { path: '/' })
 
   if (error) {
-    console.warn('[spotify] Spotify retornou erro na conexão:', error)
+    logEvent('warn', 'spotify.callback_rejected', {
+      reason: 'spotify_error',
+      spotifyError: error,
+    })
     return c.redirect(appUrl('/settings?section=spotify&spotify=denied'))
   }
   if (!code || !stateToken) {
+    logEvent('warn', 'spotify.callback_rejected', {
+      reason: !code ? 'missing_code' : 'missing_state',
+    })
     return c.redirect(appUrl('/settings?section=spotify&spotify=invalid'))
   }
 
@@ -223,15 +268,33 @@ spotify.get('/callback', async (c) => {
     !cookieNonce ||
     state.nonce !== cookieNonce
   ) {
+    logEvent('warn', 'spotify.callback_rejected', {
+      reason: !state
+        ? 'invalid_state'
+        : state.kind !== 'spotify'
+          ? 'wrong_state_kind'
+          : !state.userId
+            ? 'missing_user'
+            : !cookieNonce
+              ? 'missing_nonce_cookie'
+              : 'nonce_mismatch',
+    })
     return c.redirect(appUrl('/settings?section=spotify&spotify=state'))
   }
 
+  let stage = 'token_exchange'
   try {
     const tokens = await exchangeSpotifyCode(code, fetch, spotifyConnectRedirectUri())
+
+    stage = 'profile'
     const profile = await fetchSpotifyProfile(tokens.access_token)
     const expiresAt = new Date(Date.now() + tokens.expires_in * 1000)
     const metadata = { profile, connectedAt: new Date().toISOString() }
+    const grantedScopes = parseSpotifyScopes(tokens.scope)
+    const scopes = grantedScopes.length > 0 ? grantedScopes : SPOTIFY_SCOPES
+    const missingScopes = tokens.scope ? missingSpotifyScopes(tokens.scope) : []
 
+    stage = 'integration_upsert'
     await prisma.$transaction([
       prisma.integration.upsert({
         where: { userId_type: { userId: state.userId, type: 'spotify' } },
@@ -239,7 +302,7 @@ spotify.get('/callback', async (c) => {
           accessToken: tokens.access_token,
           refreshToken: tokens.refresh_token || undefined,
           expiresAt,
-          scopes: JSON.stringify(SPOTIFY_SCOPES),
+          scopes: JSON.stringify(scopes),
           isActive: true,
           metadata: JSON.stringify(metadata),
         },
@@ -250,7 +313,7 @@ spotify.get('/callback', async (c) => {
           accessToken: tokens.access_token,
           refreshToken: tokens.refresh_token || null,
           expiresAt,
-          scopes: JSON.stringify(SPOTIFY_SCOPES),
+          scopes: JSON.stringify(scopes),
           isActive: true,
           metadata: JSON.stringify(metadata),
         },
@@ -266,10 +329,30 @@ spotify.get('/callback', async (c) => {
       }),
     ])
 
+    logEvent('info', 'spotify.connected', {
+      userId: state.userId,
+      missingScopes,
+    })
+
     return c.redirect(appUrl('/settings?section=spotify&spotify=connected'))
   } catch (error) {
-    console.error('[spotify] Falha no callback de conexão:', error)
-    return c.redirect(appUrl('/settings?section=spotify&spotify=failed'))
+    const details = describeError(error)
+    logEvent('error', 'spotify.connect_failed', {
+      stage,
+      userId: state.userId,
+      error: details,
+      ...(error instanceof SpotifyError
+        ? {
+            spotifyCode: error.code,
+            spotifyStatus: error.status ?? null,
+            spotifyEndpoint: error.endpoint ?? null,
+            spotifyReason: error.spotifyReason ?? null,
+          }
+        : {}),
+    })
+    return c.redirect(
+      appUrl(`/settings?section=spotify&spotify=${connectionErrorStatus(error)}`)
+    )
   }
 })
 
@@ -293,6 +376,19 @@ spotify.post('/token', authMiddleware, async (c) => {
     const code = error instanceof SpotifyError ? error.code : 'TOKEN_FAILED'
     const message =
       error instanceof Error ? error.message : 'Não foi possível obter o token do Spotify.'
+    logEvent('error', 'spotify.token_failed', {
+      stage: 'access_token',
+      userId,
+      error: describeError(error),
+      ...(error instanceof SpotifyError
+        ? {
+            spotifyCode: error.code,
+            spotifyStatus: error.status ?? null,
+            spotifyEndpoint: error.endpoint ?? null,
+            spotifyReason: error.spotifyReason ?? null,
+          }
+        : {}),
+    })
     return errorResponse(c, code, message, code === 'NOT_CONNECTED' ? 401 : 502)
   }
 })
@@ -324,6 +420,19 @@ spotify.post('/refresh', authMiddleware, async (c) => {
   } catch (error) {
     const message =
       error instanceof Error ? error.message : 'Não foi possível atualizar a conta do Spotify.'
+    logEvent('error', 'spotify.refresh_failed', {
+      stage: 'profile',
+      userId,
+      error: describeError(error),
+      ...(error instanceof SpotifyError
+        ? {
+            spotifyCode: error.code,
+            spotifyStatus: error.status ?? null,
+            spotifyEndpoint: error.endpoint ?? null,
+            spotifyReason: error.spotifyReason ?? null,
+          }
+        : {}),
+    })
     return errorResponse(c, 'REFRESH_FAILED', message, 502)
   }
 })

@@ -21,13 +21,18 @@ import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
 import prisma from '../lib/prisma.js'
 import {
   SPOTIFY_SCOPES,
+  SpotifyError,
   buildSpotifyAuthUrl,
   exchangeSpotifyCode,
   fetchSpotifyProfile,
   getSpotifyConfig,
   isSpotifyConfigured,
+  missingSpotifyScopes,
+  parseSpotifyScopes,
 } from '../services/spotify.js'
-import { createSession, removeSession, validateSession } from '../services/auth.js'
+import { createSession, removeSession } from '../services/auth.js'
+import { getSessionTokens, resolveSessionUser } from '../middleware/auth.js'
+import { describeError, logEvent } from '../lib/logger.js'
 
 const auth = new Hono()
 
@@ -46,11 +51,16 @@ function appUrl(path: string): string {
   return `${base}${path}`
 }
 
+function isProduction(): boolean {
+  return process.env.NODE_ENV === 'production'
+}
+
 function cookieOptions(maxAge = 600) {
-  // Em produção o frontend (APP_URL) e a API podem estar em domínios distintos.
-  // Nesse caso o cookie precisa ser SameSite=None + Secure para ser enviado
-  // nos fetch() com credentials: 'include'.
-  const secure = (process.env.API_URL || '').startsWith('https')
+  // Em produção o frontend e a API podem estar em domínios distintos. Nesse
+  // caso o cookie precisa ser SameSite=None + Secure para ser enviado nos
+  // fetch() com credentials: 'include'. Em desenvolvimento local usamos Lax
+  // para o cookie funcionar em http://localhost.
+  const secure = isProduction()
   return {
     httpOnly: true,
     sameSite: (secure ? 'None' : 'Lax') as 'None' | 'Lax',
@@ -60,11 +70,18 @@ function cookieOptions(maxAge = 600) {
   }
 }
 
-/** Token da sessão PixTune: header Bearer (localStorage) ou cookie HttpOnly. */
-function getSessionToken(c: any): string | undefined {
-  const header = c.req.header('Authorization')
-  const bearer = header?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim()
-  return bearer || getCookie(c, SESSION_COOKIE)
+function redirectForSpotifyError(error: unknown): string {
+  if (error instanceof SpotifyError) {
+    if (error.code === 'SPOTIFY_USER_NOT_ALLOWED') return 'not_allowed'
+    if (error.code === 'SPOTIFY_INSUFFICIENT_SCOPE') return 'scope'
+    if (error.code === 'SPOTIFY_FORBIDDEN') return 'forbidden'
+    if (error.code === 'SPOTIFY_RATE_LIMITED') return 'rate_limited'
+    if (error.code === 'TOKEN_EXCHANGE_FAILED') return 'failed'
+  }
+
+  const code = (error as { code?: unknown } | null)?.code
+  if (typeof code === 'string' && code.startsWith('P')) return 'database'
+  return 'failed'
 }
 
 function createNonce(): string {
@@ -97,12 +114,11 @@ function errorResponse(c: any, code: string, message: string, status: 400 | 401 
 // ---------------------------------------------------------------
 
 auth.get('/me', async (c) => {
-  const sessionToken = getSessionToken(c)
-  if (!sessionToken) {
+  if (getSessionTokens(c).length === 0) {
     return errorResponse(c, 'NOT_AUTHENTICATED', 'Não autenticado.', 401)
   }
 
-  const user = await validateSession(sessionToken)
+  const user = await resolveSessionUser(c)
   if (!user) {
     return errorResponse(c, 'SESSION_EXPIRED', 'Sessão expirada.', 401)
   }
@@ -137,10 +153,18 @@ auth.post('/spotify/connect-url', async (c) => {
   // Amarra o início do OAuth ao navegador via cookie nonce (anti-CSRF).
   setCookie(c, OAUTH_NONCE_COOKIE, nonce, cookieOptions())
 
+  logEvent('info', 'auth.spotify_connect_url', {
+    origin: c.req.header('origin') || null,
+    cookieSecure: isProduction(),
+  })
+
   return c.json({
     success: true,
     data: {
-      url: `${config.apiUrl}/api/auth/spotify/start?ct=${encodeURIComponent(startToken)}`,
+      // URL relativa: o frontend usa o mesmo domínio da API (proxy do
+      // Cloudflare Pages em produção ou proxy do Vite em desenvolvimento).
+      // Isso mantém o cookie nonce em contexto first-party no Brave/Safari.
+      url: `/api/auth/spotify/start?ct=${encodeURIComponent(startToken)}`,
       redirectUri: config.redirectUri,
     },
   })
@@ -152,7 +176,14 @@ auth.get('/spotify/start', (c) => {
   const cookieNonce = getCookie(c, OAUTH_NONCE_COOKIE)
 
   if (!state || state.kind !== 'spotify_start' || !cookieNonce || state.nonce !== cookieNonce) {
-    console.warn('[auth] Início do OAuth rejeitado.', {
+    logEvent('warn', 'auth.spotify_start_rejected', {
+      reason: !state
+        ? 'invalid_state'
+        : state.kind !== 'spotify_start'
+          ? 'wrong_state_kind'
+          : !cookieNonce
+            ? 'missing_nonce_cookie'
+            : 'nonce_mismatch',
       hasState: Boolean(state),
       hasNonceCookie: Boolean(cookieNonce),
     })
@@ -174,28 +205,48 @@ auth.get('/spotify/callback', async (c) => {
   deleteCookie(c, OAUTH_NONCE_COOKIE, { path: '/' })
 
   if (error) {
-    console.warn('[auth] Spotify retornou erro no login:', error)
+    logEvent('warn', 'auth.spotify_callback_rejected', {
+      reason: 'spotify_error',
+      spotifyError: error,
+    })
     return c.redirect(appUrl('/login?spotify=denied'))
   }
   if (!code || !stateToken) {
+    logEvent('warn', 'auth.spotify_callback_rejected', {
+      reason: !code ? 'missing_code' : 'missing_state',
+    })
     return c.redirect(appUrl('/login?spotify=invalid'))
   }
 
   const state = verifyState(stateToken)
   if (!state || state.kind !== 'spotify' || !cookieNonce || state.nonce !== cookieNonce) {
-    console.warn('[auth] Callback do login rejeitado.', {
+    logEvent('warn', 'auth.spotify_callback_rejected', {
+      reason: !state
+        ? 'invalid_state'
+        : state.kind !== 'spotify'
+          ? 'wrong_state_kind'
+          : !cookieNonce
+            ? 'missing_nonce_cookie'
+            : 'nonce_mismatch',
       hasState: Boolean(state),
       hasNonceCookie: Boolean(cookieNonce),
     })
     return c.redirect(appUrl('/login?spotify=state'))
   }
 
+  let stage = 'token_exchange'
   try {
     const tokens = await exchangeSpotifyCode(code)
+
+    stage = 'profile'
     const profile = await fetchSpotifyProfile(tokens.access_token)
     const expiresAt = new Date(Date.now() + tokens.expires_in * 1000)
+    const grantedScopes = parseSpotifyScopes(tokens.scope)
+    const scopes = grantedScopes.length > 0 ? grantedScopes : SPOTIFY_SCOPES
+    const missingScopes = tokens.scope ? missingSpotifyScopes(tokens.scope) : []
 
-    // Cria ou sincroniza o usuário no banco com dados do Spotify
+    // Cria ou sincroniza o usuário no banco com dados do Spotify.
+    stage = 'user_upsert'
     const user = await prisma.user.upsert({
       where: { spotifyId: profile.id },
       update: {
@@ -212,14 +263,16 @@ auth.get('/spotify/callback', async (c) => {
       },
     })
 
-    // Armazena tokens do Spotify na integration
+    // Armazena tokens do Spotify na integration. A sessão PixTune só é criada
+    // depois que usuário e integração foram persistidos com sucesso.
+    stage = 'integration_upsert'
     await prisma.integration.upsert({
       where: { userId_type: { userId: user.id, type: 'spotify' } },
       update: {
         accessToken: tokens.access_token,
         refreshToken: tokens.refresh_token || undefined,
         expiresAt,
-        scopes: JSON.stringify(SPOTIFY_SCOPES),
+        scopes: JSON.stringify(scopes),
         isActive: true,
         metadata: JSON.stringify({
           profile,
@@ -233,7 +286,7 @@ auth.get('/spotify/callback', async (c) => {
         accessToken: tokens.access_token,
         refreshToken: tokens.refresh_token || null,
         expiresAt,
-        scopes: JSON.stringify(SPOTIFY_SCOPES),
+        scopes: JSON.stringify(scopes),
         isActive: true,
         metadata: JSON.stringify({
           profile,
@@ -244,14 +297,37 @@ auth.get('/spotify/callback', async (c) => {
 
     // Cria sessão PixTune: o JWT é gravado em Session.token e enviado no
     // cookie HttpOnly. O mesmo token também funciona como Bearer.
+    stage = 'session_create'
     const jwt = await createSession(user.id, 7)
 
+    stage = 'cookie_set'
     setCookie(c, SESSION_COOKIE, jwt, cookieOptions(7 * 24 * 60 * 60))
+
+    logEvent('info', 'auth.login_success', {
+      userId: user.id,
+      missingScopes,
+    })
 
     return c.redirect(appUrl('/dashboard'))
   } catch (error) {
-    console.error('[auth] Falha no callback do Spotify:', error)
-    return c.redirect(appUrl('/login?spotify=failed'))
+    const details = describeError(error)
+    logEvent('error', 'auth.login_failed', {
+      stage,
+      error: details,
+      ...(error instanceof SpotifyError
+        ? {
+            spotifyCode: error.code,
+            spotifyStatus: error.status ?? null,
+            spotifyEndpoint: error.endpoint ?? null,
+            spotifyReason: error.spotifyReason ?? null,
+          }
+        : {}),
+    })
+
+    const status = stage === 'session_create' || stage === 'cookie_set'
+      ? 'session'
+      : redirectForSpotifyError(error)
+    return c.redirect(appUrl(`/login?spotify=${status}`))
   }
 })
 
@@ -260,13 +336,14 @@ auth.get('/spotify/callback', async (c) => {
 // ---------------------------------------------------------------
 
 auth.post('/logout', async (c) => {
-  const token = getSessionToken(c)
+  const tokens = getSessionTokens(c)
 
-  if (token) {
+  for (const token of tokens) {
     await removeSession(token)
   }
 
   deleteCookie(c, SESSION_COOKIE, { path: '/' })
+  logEvent('info', 'auth.logout', { sessionsRemoved: tokens.length })
   return c.json({ success: true })
 })
 

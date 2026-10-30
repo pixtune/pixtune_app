@@ -1,6 +1,12 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { apiAuth, type SpotifyUser } from '@client/api/client'
+import {
+  apiAuth,
+  isNetworkError,
+  isUnauthorized,
+  type ApiError,
+  type SpotifyUser,
+} from '@client/api/client'
 
 interface User extends SpotifyUser {}
 
@@ -36,6 +42,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       } catch (err) {
         if (!cancelled) {
           setUser(null)
+
+          if (isUnauthorized(err)) {
+            // Sessão inexistente/expirada não é falha de API. Apenas limpamos
+            // um Bearer antigo que possa ter ficado no localStorage.
+            if (typeof localStorage !== 'undefined') {
+              localStorage.removeItem('pixtune_token')
+            }
+          } else if (isNetworkError(err)) {
+            setAuthError(
+              'Não foi possível falar com a API. Verifique VITE_API_URL, CORS e se a API está online.'
+            )
+          } else if (err instanceof Error && (err as ApiError).status && (err as ApiError).status! >= 500) {
+            setAuthError('A API respondeu com erro interno. Tente novamente em alguns instantes.')
+          }
         }
       } finally {
         if (!cancelled) {
@@ -61,10 +81,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
       setAuthError(res.error?.message || 'Não foi possível iniciar a conexão com o Spotify.')
     } catch (err) {
-      const message =
-        err instanceof Error && err.message !== 'Failed to fetch'
+      const message = isNetworkError(err)
+        ? 'Não foi possível falar com a API. Verifique VITE_API_URL, CORS e se a API está online.'
+        : err instanceof Error
           ? err.message
-          : 'Não foi possível falar com a API. Verifique VITE_API_URL, CORS e se a API está online.'
+          : 'Não foi possível iniciar a conexão com o Spotify.'
       setAuthError(message)
     }
   }, [])
