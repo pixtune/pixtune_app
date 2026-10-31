@@ -12,9 +12,35 @@
 // funciona em navegadores com proteção contra cookies de terceiros (Brave).
 const DEFAULT_API_URL =
   typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3001'
-const API_URL = (import.meta.env.VITE_API_URL || DEFAULT_API_URL)
-  .replace(/\/+$/, '')
-  .replace(/\/api$/, '')
+
+/**
+ * Em produção a API precisa ser acessada pela mesma origem da página para que
+ * o cookie HttpOnly seja first-party. Se `VITE_API_URL` ainda apontar para o
+ * Render (ou qualquer outro domínio), ignoramos o valor e usamos /api no
+ * próprio domínio. Isso evita que uma variável antiga no Cloudflare Pages
+ * reintroduza o bug do Brave/Safari.
+ */
+function resolveApiUrl(): string {
+  const configured = (import.meta.env.VITE_API_URL || '').trim()
+  if (!configured) return DEFAULT_API_URL
+
+  try {
+    const resolved = new URL(configured, DEFAULT_API_URL)
+    if (resolved.origin === new URL(DEFAULT_API_URL).origin) {
+      return resolved.toString().replace(/\/+$/, '')
+    }
+  } catch {
+    // Valor inválido: usa same-origin.
+  }
+
+  console.warn(
+    '[PixTune] VITE_API_URL aponta para outra origem e foi ignorada. ' +
+      'Use o proxy same-origin de /api (functions/api/[[path]].js).'
+  )
+  return DEFAULT_API_URL
+}
+
+const API_URL = resolveApiUrl().replace(/\/+$/, '').replace(/\/api$/, '')
 
 /** URL base da API, exposta para diagnósticos e integrações. */
 export const API_BASE_URL = API_URL
@@ -58,6 +84,14 @@ async function request<T = unknown>(
     headers['Authorization'] = `Bearer ${token}`
   }
 
+  // Sem timeout, uma API hibernando no Render (plano free) podia deixar a
+  // interface em "carregando" para sempre. 20s é suficiente para um cold start.
+  const controller =
+    !options.signal && typeof AbortController !== 'undefined' ? new AbortController() : null
+  const timeoutId = controller
+    ? globalThis.setTimeout(() => controller.abort(), 20_000)
+    : undefined
+
   let res: Response
   try {
     res = await fetch(url, {
@@ -65,11 +99,18 @@ async function request<T = unknown>(
       credentials: 'include',
       ...options,
       headers,
+      ...(controller ? { signal: controller.signal } : {}),
     })
   } catch {
-    const error: ApiError = new Error('Falha de rede ao falar com a API.')
+    const error: ApiError = new Error(
+      controller?.signal.aborted
+        ? 'A API demorou demais para responder. Tente novamente.'
+        : 'Falha de rede ao falar com a API.'
+    )
     error.kind = 'network'
     throw error
+  } finally {
+    if (timeoutId !== undefined) globalThis.clearTimeout(timeoutId)
   }
 
   let body: any
@@ -79,8 +120,13 @@ async function request<T = unknown>(
     body = {}
   }
 
-  if (!res.ok) {
-    const error: ApiError = new Error(body?.error?.message || `Request failed: ${res.status}`)
+  // A API usa status HTTP corretos, mas se algum endpoint antigo devolver
+  // 200 com success:false, o cliente não pode tratar como sucesso silencioso.
+  if (!res.ok || body?.success === false) {
+    const error: ApiError = new Error(
+      body?.error?.message ||
+        (res.ok ? 'A API não concluiu a operação.' : `Request failed: ${res.status}`)
+    )
     error.status = res.status
     error.kind = 'http'
     error.code = body?.error?.code
@@ -337,9 +383,11 @@ export const apiMusic = {
     method: 'POST',
   }),
 
-  ended: () => request<{ track?: MusicTrack | null }>('/api/music/ended', {
-    method: 'POST',
-  }),
+  ended: (trackId?: string) =>
+    request<{ track?: MusicTrack | null }>('/api/music/ended', {
+      method: 'POST',
+      body: JSON.stringify(trackId ? { trackId } : {}),
+    }),
 
   duration: (trackId: string, durationMs: number) =>
     request<{ trackId: string; durationMs: number }>('/api/music/duration', {
@@ -491,9 +539,10 @@ export const apiSpotify = {
       method: 'POST',
     }),
 
-  token: () =>
+  token: (force = false) =>
     request<{ accessToken: string; expiresAt: string | null }>('/api/spotify/token', {
       method: 'POST',
+      body: JSON.stringify({ force }),
     }),
 
   refresh: () =>

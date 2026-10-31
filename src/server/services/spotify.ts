@@ -11,6 +11,7 @@
  */
 
 import prisma from '../lib/prisma.js'
+import { describeError, logEvent } from '../lib/logger.js'
 import { spotifyTrackUrl, spotifyTrackUri } from '../../shared/spotify.js'
 
 const SPOTIFY_AUTH_URL = 'https://accounts.spotify.com/authorize'
@@ -50,19 +51,112 @@ export function getSpotifyConfig(): SpotifyConfig | null {
   const apiUrl = (process.env.API_URL || 'http://localhost:3001')
     .replace(/\/+$/, '')
     .replace(/\/api$/, '')
-  const appUrl = (process.env.APP_URL || 'http://localhost:3000').replace(/\/+$/, '')
-  const redirectUri = (
-    process.env.SPOTIFY_REDIRECT_URI || `${apiUrl}/api/auth/spotify/callback`
-  ).trim()
-  const connectRedirectUri = (
-    process.env.SPOTIFY_CONNECT_REDIRECT_URI || `${apiUrl}/api/spotify/callback`
-  ).trim()
+  // APP_URL é a origem que o navegador usa (Cloudflare Pages em produção).
+  // Sem APP_URL, mantemos o comportamento antigo (API_URL) para não quebrar
+  // setups locais/testes.
+  const appUrl = (process.env.APP_URL || '').replace(/\/+$/, '') || apiUrl
+  const redirectUri = resolveCallbackUri(
+    process.env.SPOTIFY_REDIRECT_URI,
+    `${appUrl}/api/auth/spotify/callback`,
+    'SPOTIFY_REDIRECT_URI',
+    appUrl
+  )
+  const connectRedirectUri = resolveCallbackUri(
+    process.env.SPOTIFY_CONNECT_REDIRECT_URI,
+    `${appUrl}/api/spotify/callback`,
+    'SPOTIFY_CONNECT_REDIRECT_URI',
+    appUrl
+  )
 
   return { clientId, clientSecret, apiUrl, appUrl, redirectUri, connectRedirectUri }
 }
 
+/**
+ * O nonce do OAuth é um cookie host-only gravado no domínio do app.
+ *
+ * Se o redirect_uri apontar para outro host (por exemplo, o Render enquanto o
+ * app roda no Pages), o Spotify manda o navegador direto para esse outro host
+ * e o cookie nunca chega ao callback — exatamente o erro "cookie de segurança
+ * não chegou ao servidor". Nesse caso usamos o callback no domínio do APP_URL,
+ * que passa pelo proxy same-origin e enxerga o cookie. A URL corrigida ainda
+ * precisa estar cadastrada no Spotify Dashboard; o log aponta a divergência.
+ *
+ * Diferença apenas de porta (localhost:3000 x localhost:3001) é permitida:
+ * cookies são compartilhados por host, não por porta.
+ */
+function resolveCallbackUri(
+  configured: string | undefined,
+  fallback: string,
+  envName: string,
+  appUrl: string
+): string {
+  const value = (configured || '').trim()
+  if (!value) return fallback
+
+  try {
+    const uri = new URL(value)
+    const app = new URL(appUrl)
+
+    if (uri.hostname !== app.hostname) {
+      logEvent('error', 'spotify.redirect_uri_host_mismatch', {
+        env: envName,
+        configuredHost: uri.hostname,
+        appHost: app.hostname,
+        using: fallback,
+        hint:
+          'O cookie nonce é host-only. Cadastre a URL do app no Spotify Dashboard e mantenha o callback no mesmo domínio do APP_URL (proxy /api do Pages).',
+      })
+      return fallback
+    }
+
+    if (process.env.NODE_ENV === 'production' && uri.protocol !== 'https:') {
+      logEvent('error', 'spotify.redirect_uri_insecure', {
+        env: envName,
+        using: fallback,
+      })
+      return fallback
+    }
+
+    return value
+  } catch {
+    logEvent('error', 'spotify.redirect_uri_invalid', { env: envName, using: fallback })
+    return fallback
+  }
+}
+
 export function isSpotifyConfigured(): boolean {
   return getSpotifyConfig() !== null
+}
+
+/**
+ * Converte erros do Spotify/da integração em status HTTP coerentes.
+ *
+ * Antes as rotas devolviam 401 só para NOT_CONNECTED e 502 para todo o resto:
+ * um 403 de Development Mode virava 502 ("erro no servidor") e um rate limit
+ * do Spotify também. O frontend agora consegue reagir corretamente.
+ */
+export function spotifyErrorStatus(
+  error: unknown
+): 400 | 401 | 403 | 404 | 409 | 429 | 502 | 503 {
+  if (!(error instanceof SpotifyError)) return 502
+
+  switch (error.code) {
+    case 'NOT_CONNECTED':
+    case 'UNAUTHORIZED':
+      return 401
+    case 'NOT_CONFIGURED':
+      return 503
+    case 'SPOTIFY_USER_NOT_ALLOWED':
+    case 'SPOTIFY_INSUFFICIENT_SCOPE':
+    case 'SPOTIFY_FORBIDDEN':
+      return 403
+    case 'NOT_FOUND':
+      return 404
+    case 'SPOTIFY_RATE_LIMITED':
+      return 429
+    default:
+      return 502
+  }
 }
 
 export function spotifyRedirectUri(): string {
@@ -568,24 +662,82 @@ export async function fetchPlaylistTracks(
 // Tokens por usuário
 // ---------------------------------------------------------------
 
+/**
+ * Um refresh por usuário por vez.
+ *
+ * O player e as páginas fazem polling; sem esse lock, vários requests
+ * concorrentes podiam trocar o mesmo refresh token ao mesmo tempo. O Spotify
+ * pode rotacionar o refresh token, então duas trocas simultâneas faziam uma
+ * delas falhar com invalid_grant e derrubavam a integração à toa.
+ */
+const refreshLocks = new Map<string, Promise<string>>()
+
+async function markSpotifyDisconnected(userId: string, reason: string): Promise<void> {
+  try {
+    await prisma.$transaction([
+      prisma.integration.updateMany({
+        where: { userId, type: 'spotify' },
+        data: {
+          isActive: false,
+          accessToken: null,
+          refreshToken: null,
+          expiresAt: null,
+        },
+      }),
+      prisma.settings.upsert({
+        where: { userId },
+        update: {
+          musicConnected: false,
+          musicAccessToken: null,
+          musicRefreshToken: null,
+          musicTokenExpiresAt: null,
+        },
+        create: {
+          userId,
+          musicProvider: 'spotify',
+          musicConnected: false,
+        },
+      }),
+    ])
+  } catch (error) {
+    // A falha ao limpar não deve mascarar o erro original (token inválido).
+    logEvent('error', 'spotify.disconnect_cleanup_failed', {
+      userId,
+      reason,
+      error: describeError(error),
+    })
+  }
+
+  logEvent('warn', 'spotify.disconnected', { userId, reason })
+}
+
 /** Lê o token válido do usuário, renovando quando necessário. */
 export async function getSpotifyAccessToken(
   userId: string,
-  fetchImpl: FetchLike = fetch
+  fetchImpl: FetchLike = fetch,
+  options: { forceRefresh?: boolean } = {}
 ): Promise<string> {
-  const integration = await prisma.integration.findUnique({
-    where: { userId_type: { userId, type: 'spotify' } },
-  })
+  const pending = refreshLocks.get(userId)
+  if (pending) return pending
 
-  if (!integration?.isActive || !integration.accessToken) {
-    throw new SpotifyError('Conecte sua conta do Spotify nas configurações.', 'NOT_CONNECTED')
-  }
+  const task = (async () => {
+    const integration = await prisma.integration.findUnique({
+      where: { userId_type: { userId, type: 'spotify' } },
+    })
 
-  const expiresSoon =
-    !integration.expiresAt || integration.expiresAt.getTime() < Date.now() + 60_000
+    if (!integration?.isActive || !integration.accessToken) {
+      throw new SpotifyError('Conecte sua conta do Spotify nas configurações.', 'NOT_CONNECTED')
+    }
 
-  if (expiresSoon) {
+    const expiresSoon =
+      options.forceRefresh ||
+      !integration.expiresAt ||
+      integration.expiresAt.getTime() < Date.now() + 60_000
+
+    if (!expiresSoon) return integration.accessToken
+
     if (!integration.refreshToken) {
+      await markSpotifyDisconnected(userId, 'missing_refresh_token')
       throw new SpotifyError('Sessão do Spotify expirada. Reconecte a conta.', 'NOT_CONNECTED')
     }
 
@@ -593,28 +745,93 @@ export async function getSpotifyAccessToken(
     try {
       refreshed = await refreshSpotifyToken(integration.refreshToken, fetchImpl)
     } catch (error) {
-      if (
+      const invalidGrant =
         error instanceof SpotifyError &&
         error.code === 'REFRESH_FAILED' &&
-        (error.status === 400 || error.status === 401)
-      ) {
-        throw new SpotifyError('Sessão do Spotify expirada. Reconecte a conta.', 'NOT_CONNECTED')
+        (error.status === 400 || error.status === 401) &&
+        (!error.spotifyReason || error.spotifyReason === 'invalid_grant')
+
+      if (invalidGrant) {
+        await markSpotifyDisconnected(userId, 'invalid_grant')
+        throw new SpotifyError(
+          'Sessão do Spotify expirada. Reconecte a conta.',
+          'NOT_CONNECTED'
+        )
       }
+
+      // Erro de rede, 5xx ou credenciais do app: não apaga a integração do
+      // usuário. O próximo request tenta de novo.
       throw error
     }
-    await prisma.integration.update({
-      where: { id: integration.id },
-      data: {
-        accessToken: refreshed.access_token,
-        refreshToken: refreshed.refresh_token || integration.refreshToken,
-        expiresAt: new Date(Date.now() + refreshed.expires_in * 1000),
-        scopes: JSON.stringify(
-          refreshed.scope ? parseSpotifyScopes(refreshed.scope) : SPOTIFY_SCOPES
-        ),
-      },
-    })
-    return refreshed.access_token
-  }
 
-  return integration.accessToken
+    const expiresAt = new Date(Date.now() + refreshed.expires_in * 1000)
+
+    await prisma.$transaction([
+      prisma.integration.update({
+        where: { id: integration.id },
+        data: {
+          accessToken: refreshed.access_token,
+          refreshToken: refreshed.refresh_token || integration.refreshToken,
+          expiresAt,
+          scopes: JSON.stringify(
+            refreshed.scope ? parseSpotifyScopes(refreshed.scope) : SPOTIFY_SCOPES
+          ),
+        },
+      }),
+      prisma.settings.upsert({
+        where: { userId },
+        update: {
+          musicConnected: true,
+          musicAccessToken: refreshed.access_token,
+          musicRefreshToken: refreshed.refresh_token || integration.refreshToken,
+          musicTokenExpiresAt: expiresAt,
+        },
+        create: {
+          userId,
+          musicProvider: 'spotify',
+          musicConnected: true,
+          musicAccessToken: refreshed.access_token,
+          musicRefreshToken: refreshed.refresh_token || integration.refreshToken,
+          musicTokenExpiresAt: expiresAt,
+        },
+      }),
+    ])
+
+    return refreshed.access_token
+  })()
+
+  refreshLocks.set(userId, task)
+  task.then(
+    () => {
+      if (refreshLocks.get(userId) === task) refreshLocks.delete(userId)
+    },
+    () => {
+      if (refreshLocks.get(userId) === task) refreshLocks.delete(userId)
+    }
+  )
+
+  return task
+}
+
+/**
+ * Executa uma chamada autenticada e, se o Spotify recusar o access token
+ * (401), força um refresh e tenta uma única vez de novo. Isso cobre o caso
+ * de token revogado antes do vencimento — sem obrigar o usuário a reconectar.
+ */
+export async function withSpotifyAccessToken<T>(
+  userId: string,
+  fn: (accessToken: string) => Promise<T>,
+  fetchImpl: FetchLike = fetch
+): Promise<T> {
+  const token = await getSpotifyAccessToken(userId, fetchImpl)
+
+  try {
+    return await fn(token)
+  } catch (error) {
+    if (error instanceof SpotifyError && error.code === 'UNAUTHORIZED') {
+      const fresh = await getSpotifyAccessToken(userId, fetchImpl, { forceRefresh: true })
+      return fn(fresh)
+    }
+    throw error
+  }
 }

@@ -14,6 +14,7 @@ interface AuthContextType {
   user: User | null
   isAuthenticated: boolean
   isLoading: boolean
+  isConnecting: boolean
   authError: string | null
   spotifyLogin: () => void
   logout: () => Promise<void>
@@ -24,6 +25,7 @@ const AuthContext = createContext<AuthContextType | null>(null)
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null)
   const [isLoading, setIsLoading] = useState(true)
+  const [isConnecting, setIsConnecting] = useState(false)
   const [authError, setAuthError] = useState<string | null>(null)
   const navigate = useNavigate()
 
@@ -72,7 +74,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const spotifyLogin = useCallback(async () => {
+    if (isConnecting) return
     setAuthError(null)
+    setIsConnecting(true)
     try {
       const res = await apiAuth.connectUrl()
       if (res.success && res.data?.url) {
@@ -87,8 +91,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           ? err.message
           : 'Não foi possível iniciar a conexão com o Spotify.'
       setAuthError(message)
+    } finally {
+      setIsConnecting(false)
     }
-  }, [])
+  }, [isConnecting])
 
   const logout = useCallback(async () => {
     try {
@@ -107,6 +113,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       user,
       isAuthenticated: !!user,
       isLoading,
+      isConnecting,
       authError,
       spotifyLogin,
       logout,

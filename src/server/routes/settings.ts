@@ -12,11 +12,43 @@ import { isSpotifyConfigured } from '../services/spotify.js'
 
 const settings = new Hono()
 
-function responsePayload(userSettings: any, songRequest: { enabled: boolean; minAmountCents: number; action: SongRequestAction }) {
+function parseMetadata(raw: string | null | undefined): Record<string, unknown> {
+  if (!raw) return {}
+  try {
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {}
+  } catch {
+    return {}
+  }
+}
+
+interface IntegrationFlags {
+  livepix: { isActive: boolean; metadata: string | null } | null
+  spotify: { isActive: boolean; accessToken: string | null } | null
+}
+
+function responsePayload(
+  userSettings: any,
+  songRequest: { enabled: boolean; minAmountCents: number; action: SongRequestAction },
+  connections: IntegrationFlags
+) {
+  const livepixMeta = parseMetadata(connections.livepix?.metadata)
+  // A fonte de verdade é a Integration. O Settings.livepixConnected nunca era
+  // atualizado e podia ficar eternamente false mesmo com o LivePix conectado.
+  const livepixConnected = Boolean(
+    connections.livepix?.isActive &&
+      livepixMeta.clientId &&
+      livepixMeta.clientSecret &&
+      livepixMeta.accountId
+  )
+  const musicConnected = Boolean(
+    connections.spotify?.isActive && connections.spotify.accessToken
+  )
+
   return {
-    livepixConnected: userSettings?.livepixConnected ?? false,
+    livepixConnected,
     musicProvider: userSettings?.musicProvider ?? 'spotify',
-    musicConnected: userSettings?.musicConnected ?? false,
+    musicConnected,
     autoPlay: userSettings?.autoPlay ?? true,
     defaultVolume: userSettings?.defaultVolume ?? 70,
     crossfade: userSettings?.crossfade ?? false,
@@ -31,17 +63,30 @@ function responsePayload(userSettings: any, songRequest: { enabled: boolean; min
   }
 }
 
+async function loadConnections(userId: string): Promise<IntegrationFlags> {
+  const integrations = await prisma.integration.findMany({
+    where: { userId, type: { in: ['livepix', 'spotify'] } },
+    select: { type: true, isActive: true, accessToken: true, metadata: true },
+  })
+
+  return {
+    livepix: integrations.find((item) => item.type === 'livepix') ?? null,
+    spotify: integrations.find((item) => item.type === 'spotify') ?? null,
+  }
+}
+
 // Obter configurações do usuário
 settings.get('/', authMiddleware, async (c) => {
   const userId = getUserId(c)
-  const [userSettings, songRequest] = await Promise.all([
+  const [userSettings, songRequest, connections] = await Promise.all([
     prisma.settings.findUnique({ where: { userId } }),
     getSongRequestSettings(userId),
+    loadConnections(userId),
   ])
 
   return c.json({
     success: true,
-    data: responsePayload(userSettings, songRequest),
+    data: responsePayload(userSettings, songRequest, connections),
   })
 })
 
@@ -69,7 +114,7 @@ settings.patch('/', authMiddleware, zValidator('json', updateSchema), async (c) 
 
   const hasUserSettingsUpdates = Object.keys(userSettingsUpdates).length > 0
 
-  const [userSettings, songRequest] = await Promise.all([
+  const [userSettings, songRequest, connections] = await Promise.all([
     hasUserSettingsUpdates
       ? prisma.settings.upsert({
           where: { userId },
@@ -86,11 +131,12 @@ settings.patch('/', authMiddleware, zValidator('json', updateSchema), async (c) 
           action: songRequestAction,
         })
       : getSongRequestSettings(userId),
+    loadConnections(userId),
   ])
 
   return c.json({
     success: true,
-    data: responsePayload(userSettings, songRequest),
+    data: responsePayload(userSettings, songRequest, connections),
   })
 })
 

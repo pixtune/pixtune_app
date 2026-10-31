@@ -63,6 +63,7 @@ export function SettingsPage() {
   const [playlistsLoading, setPlaylistsLoading] = useState(false)
   const [importingPlaylistId, setImportingPlaylistId] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [livepixForm, setLivepixForm] = useState({
     clientId: '',
     clientSecret: '',
@@ -74,10 +75,23 @@ export function SettingsPage() {
   }, [])
 
   async function loadData() {
+    setLoading(true)
+    setLoadError(null)
     try {
-      await Promise.all([loadSettings(), loadLivePixConfig(), loadSpotify()])
-    } catch (err) {
-      console.error('Erro ao carregar configurações:', err)
+      const results = await Promise.allSettled([
+        loadSettings(),
+        loadLivePixConfig(),
+        loadSpotify(),
+      ])
+      const failed = results.find((result) => result.status === 'rejected')
+      if (failed && failed.status === 'rejected') {
+        const reason = failed.reason
+        setLoadError(
+          reason instanceof Error
+            ? reason.message
+            : 'Não foi possível carregar todas as configurações.'
+        )
+      }
     } finally {
       setLoading(false)
     }
@@ -103,16 +117,12 @@ export function SettingsPage() {
   }
 
   async function loadSpotify() {
-    try {
-      const res = await apiSpotify.status()
-      if (res.success && res.data) {
-        setSpotifyStatus(res.data)
-        if (res.data.connected) {
-          void loadPlaylists()
-        }
+    const res = await apiSpotify.status()
+    if (res.success && res.data) {
+      setSpotifyStatus(res.data)
+      if (res.data.connected) {
+        void loadPlaylists()
       }
-    } catch (err) {
-      console.error('Erro ao carregar integração Spotify:', err)
     }
   }
 
@@ -124,7 +134,9 @@ export function SettingsPage() {
         setPlaylists(res.data.playlists)
       }
     } catch (err) {
-      console.error('Erro ao carregar playlists do Spotify:', err)
+      setSpotifyFeedback(
+        err instanceof Error ? err.message : 'Não foi possível carregar as playlists do Spotify.'
+      )
     } finally {
       setPlaylistsLoading(false)
     }
@@ -153,14 +165,20 @@ export function SettingsPage() {
   }
 
   async function updateSettings(patch: Record<string, unknown>) {
-    setSettings((previous: any) => ({ ...previous, ...patch }))
+    const previous = settings
+    setSettings((current: any) => ({ ...current, ...patch }))
     try {
       const res = await apiSettings.update(patch as any)
       if (res.success && res.data) {
-        setSettings((previous: any) => ({ ...previous, ...res.data }))
+        setSettings((current: any) => ({ ...current, ...res.data }))
       }
     } catch (err) {
-      console.error('Erro ao salvar configuração:', err)
+      setSettings(previous)
+      setLoadError(
+        err instanceof Error
+          ? err.message
+          : 'Não foi possível salvar a configuração. Tente novamente.'
+      )
     }
   }
 
@@ -172,6 +190,7 @@ export function SettingsPage() {
         denied: { kind: 'error' as const, text: 'Autorização do Spotify cancelada.' },
         invalid: { kind: 'error' as const, text: 'Resposta inválida do Spotify. Tente conectar novamente.' },
         state: { kind: 'error' as const, text: 'A sessão de conexão expirou ou o cookie de segurança não foi enviado. Tente novamente.' },
+        config: { kind: 'error' as const, text: 'A URL de callback do Spotify não confere com o domínio do PixTune. Cadastre em Spotify Dashboard a URL exibida na seção Spotify.' },
         failed: { kind: 'error' as const, text: 'Não foi possível conectar a conta do Spotify. A API registrou a etapa exata da falha.' },
         not_configured: { kind: 'error' as const, text: 'OAuth do Spotify não configurado no servidor.' },
         not_allowed: { kind: 'error' as const, text: 'Sua conta Spotify não está autorizada no app (Development Mode). Peça para adicionar seu e-mail em Users Management.' },
@@ -205,6 +224,21 @@ export function SettingsPage() {
           </Button>
         </Link>
       </div>
+
+      {loadError && (
+        <div
+          role="alert"
+          className="flex flex-col gap-3 rounded-xl border border-pixtune-danger/30 bg-pixtune-danger/10 p-4 text-body-sm text-pixtune-danger sm:flex-row sm:items-center sm:justify-between"
+        >
+          <span className="flex items-start gap-2">
+            <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" />
+            {loadError}
+          </span>
+          <Button variant="outline" size="sm" onClick={() => void loadData()}>
+            <RefreshCw className="mr-2 h-4 w-4" /> Tentar novamente
+          </Button>
+        </div>
+      )}
 
       {spotifyNotice && (
         <div
@@ -586,35 +620,38 @@ function LivePixSettings({
           </div>
         )}
 
-        {showCredentialsForm && (
-          <div className="space-y-2">
-            <label className="text-body-sm font-medium text-pixtune-textSecondary">
-              URL de webhook desta conta
-            </label>
-            <div className="flex gap-2">
-              <Input id="streamerWebhook" readOnly value={webhookUrl || 'Carregando...'} />
-              <Button
-                type="button"
-                variant="secondary"
-                disabled={!webhookUrl}
-                onClick={async () => {
-                  const copied = await copyToClipboard(webhookUrl)
-                  setFeedback(
-                    copied
-                      ? { kind: 'success', text: 'URL do webhook copiada.' }
-                      : { kind: 'error', text: 'Selecione a URL ao lado e copie manualmente.' }
-                  )
-                }}
-              >
-                Copiar
-              </Button>
-            </div>
-            <p className="text-caption text-pixtune-textMuted">
-              Cadastre esta URL no painel do Live Pix. Ela contém um token exclusivo da sua conta.
-              Para receber doações reais, o PixTune precisa estar acessível publicamente.
-            </p>
+        <div className="space-y-2">
+          <label className="text-body-sm font-medium text-pixtune-textSecondary">
+            URL de webhook desta conta
+          </label>
+          <div className="flex gap-2">
+            <Input
+              id="streamerWebhook"
+              readOnly
+              value={webhookUrl || 'Carregando URL do webhook...'}
+            />
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={!webhookUrl}
+              onClick={async () => {
+                const copied = await copyToClipboard(webhookUrl)
+                setFeedback(
+                  copied
+                    ? { kind: 'success', text: 'URL do webhook copiada.' }
+                    : { kind: 'error', text: 'Selecione a URL ao lado e copie manualmente.' }
+                )
+              }}
+            >
+              Copiar
+            </Button>
           </div>
-        )}
+          <p className="text-caption text-pixtune-textMuted">
+            Cadastre esta URL no painel do Live Pix. Ela contém um token exclusivo da sua conta e
+            fica disponível mesmo quando a conexão está ativa. Para receber doações reais, o PixTune
+            precisa estar acessível publicamente.
+          </p>
+        </div>
 
         <div className="p-4 rounded-lg bg-pixtune-surfaceElevated/50 border border-pixtune-border">
           <h4 className="text-caption font-medium text-pixtune-textSecondary mb-2">Sobre o LivePix</h4>

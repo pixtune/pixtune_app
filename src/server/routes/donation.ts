@@ -24,6 +24,7 @@ import { getSongRequestSettings } from '../services/songRequestSettings.js'
 import { maybeStartItem } from '../services/queuePriority.js'
 import { getSpotifyAccessToken, SpotifyError } from '../services/spotify.js'
 import { findSpotifyTrackIdInText, spotifyTrackUrl } from '../../shared/spotify.js'
+import { describeError, logEvent } from '../lib/logger.js'
 
 const donations = new Hono()
 
@@ -71,6 +72,18 @@ const normalizedWebhookSchema = z.object({
 const webhookSchema = z.union([officialWebhookSchema, normalizedWebhookSchema])
 
 async function handleWebhook(token: string, payload: z.infer<typeof webhookSchema>) {
+  // Tokens são 24 bytes em hex (48 chars). Rejeitar formatos estranhos evita
+  // consultas amplas e mantém a resposta 404 para URLs inválidas.
+  if (!/^[a-f0-9]{48}$/i.test(token)) {
+    return {
+      status: 404 as const,
+      body: {
+        success: false,
+        error: { code: 'UNKNOWN_WEBHOOK', message: 'Webhook não reconhecido' },
+      },
+    }
+  }
+
   const userId = await findUserIdByWebhookToken(token)
   if (!userId) {
     return { status: 404 as const, body: { success: false, error: { code: 'UNKNOWN_WEBHOOK', message: 'Webhook não reconhecido' } } }
@@ -104,8 +117,11 @@ async function handleWebhook(token: string, payload: z.infer<typeof webhookSchem
     try {
       const service = new LivePixService(config, userId)
       event = await service.resolveWebhookResource({ id, type })
-    } catch (err: any) {
-      console.error('Erro ao consultar detalhes do webhook no LivePix:', err)
+    } catch (error) {
+      logEvent('error', 'donation.webhook_resolve_failed', {
+        userId,
+        error: describeError(error),
+      })
       return {
         status: 502 as const,
         body: {
@@ -126,13 +142,29 @@ async function handleWebhook(token: string, payload: z.infer<typeof webhookSchem
   try {
     const result = await processWebhookEvent(event, userId)
 
-    // Se a doação foi paga, tentar aplicar o pedido musical da mensagem.
-    if (result.status !== 'duplicate' && result.isPaid) {
-      await applyDonationRules(result.donationId, result.amountCents, result.donorMessage)
+    // Lê o estado atual para decidir se uma duplicata ainda precisa ser
+    // aplicada. Uma primeira entrega pode ter falhado por erro temporário do
+    // Spotify; o LivePix reenvia o webhook e nós precisamos reprocessar.
+    const current = await prisma.donationEvent.findUnique({
+      where: { id: result.donationId },
+      select: {
+        status: true,
+        queueItem: { select: { id: true } },
+      },
+    })
+
+    const shouldApply =
+      result.isPaid &&
+      current !== null &&
+      (result.status !== 'duplicate' ||
+        (!current.queueItem &&
+          ['received', 'validated', 'failed'].includes(current.status)))
+
+    if (shouldApply) {
+      await applyDonationRules(result.donationId)
     }
 
     // Relê o evento para devolver o status final.
-    // Em duplicata, preserva o status original e não reaplica regras.
     const finalEvent = await prisma.donationEvent.findUnique({
       where: { id: result.donationId },
       select: {
@@ -158,7 +190,7 @@ async function handleWebhook(token: string, payload: z.infer<typeof webhookSchem
         success: true,
         data: {
           ...result,
-          status: result.status === 'duplicate' ? 'duplicate' : (finalEvent?.status ?? result.status),
+          status: result.status === 'duplicate' ? (finalEvent?.status ?? 'duplicate') : (finalEvent?.status ?? result.status),
           matchedRuleName: finalEvent?.matchedRule?.name ?? null,
           matchedRuleAction: finalEvent?.matchedRule?.action ?? null,
           songTitle: finalEvent?.queueItem?.title ?? null,
@@ -169,11 +201,22 @@ async function handleWebhook(token: string, payload: z.infer<typeof webhookSchem
         },
       },
     }
-  } catch (err: any) {
-    console.error('Erro ao processar webhook Live Pix:', err)
+  } catch (error) {
+    // Erro interno precisa de 5xx para o provedor reenviar. Antes retornávamos
+    // 200 com success:false, e o LivePix considerava a entrega concluída.
+    logEvent('error', 'donation.webhook_failed', {
+      userId,
+      error: describeError(error),
+    })
     return {
-      status: 200 as const,
-      body: { success: false, error: { code: 'WEBHOOK_ERROR', message: err.message || 'Erro interno' } },
+      status: 500 as const,
+      body: {
+        success: false,
+        error: {
+          code: 'WEBHOOK_ERROR',
+          message: 'Erro interno ao processar o webhook. Tente novamente.',
+        },
+      },
     }
   }
 }
@@ -237,6 +280,14 @@ interface EnqueueSongInput {
  * capaz de furar ou reordenar a prioridade.
  */
 async function enqueueSong({ userId, donationEventId, song }: EnqueueSongInput) {
+  // Idempotência: uma duplicata/reprocessamento não pode criar duas músicas
+  // para a mesma doação (donationEventId é unique).
+  const existing = await prisma.queueItem.findUnique({ where: { donationEventId } })
+  if (existing) {
+    const started = await maybeStartItem(userId, existing.id)
+    return started ?? existing
+  }
+
   const last = await prisma.queueItem.findFirst({
     where: { userId },
     orderBy: { position: 'desc' },
@@ -245,24 +296,36 @@ async function enqueueSong({ userId, donationEventId, song }: EnqueueSongInput) 
 
   const sourceUrl = song.sourceUrl || spotifyTrackUrl(song.providerId)
 
-  const created = await prisma.queueItem.create({
-    data: {
-      userId,
-      title: song.title,
-      artist: song.artist,
-      album: song.album,
-      artworkUrl: song.artworkUrl,
-      durationMs: song.durationMs,
-      sourceUrl,
-      provider: 'spotify',
-      providerId: song.providerId,
-      position: (last?.position ?? -1) + 1,
-      addedBy: 'donation',
-      donationEventId,
-      status: 'pending',
-      playedAt: null,
-    },
-  })
+  let created: Awaited<ReturnType<typeof prisma.queueItem.create>>
+  try {
+    created = await prisma.queueItem.create({
+      data: {
+        userId,
+        title: song.title,
+        artist: song.artist,
+        album: song.album,
+        artworkUrl: song.artworkUrl,
+        durationMs: song.durationMs,
+        sourceUrl,
+        provider: 'spotify',
+        providerId: song.providerId,
+        position: (last?.position ?? -1) + 1,
+        addedBy: 'donation',
+        donationEventId,
+        status: 'pending',
+        playedAt: null,
+      },
+    })
+  } catch (error) {
+    if ((error as { code?: string } | null)?.code === 'P2002') {
+      const duplicate = await prisma.queueItem.findUnique({ where: { donationEventId } })
+      if (duplicate) {
+        const started = await maybeStartItem(userId, duplicate.id)
+        return started ?? duplicate
+      }
+    }
+    throw error
+  }
 
   // A doação já foi gravada com amountCents no DonationEvent, que é a fonte
   // imutável da prioridade. Se a nova faixa for a maior, ela derruba a atual.
@@ -281,11 +344,7 @@ async function enqueueSong({ userId, donationEventId, song }: EnqueueSongInput) 
  * Não há palavras-chave nem ações de comando: a prioridade por valor é a
  * única regra de reprodução do sistema.
  */
-async function applyDonationRules(
-  donationEventId: string,
-  amountCents: number,
-  donorMessage?: string
-): Promise<void> {
+async function applyDonationRules(donationEventId: string): Promise<void> {
   const donationEvent = await prisma.donationEvent.findUnique({
     where: { id: donationEventId },
   })
@@ -293,19 +352,47 @@ async function applyDonationRules(
   if (!donationEvent) return
 
   const userId = donationEvent.userId
-  const message = (donorMessage ?? donationEvent.donorMessage ?? '').trim()
-  const settings = await getSongRequestSettings(userId)
+
+  // Idempotência: se a música já está na fila, o pedido está concluído.
+  // Não reavalia configurações nem duplica a entrada.
+  const existingItem = await prisma.queueItem.findUnique({
+    where: { donationEventId },
+    select: { id: true },
+  })
+  if (existingItem) {
+    await maybeStartItem(userId, existingItem.id)
+    await markEvent(donationEventId, 'processed', null)
+    return
+  }
+
+  const message = (donationEvent.donorMessage ?? '').trim()
 
   if (!message) {
     await markEvent(donationEventId, 'ignored', spotifySongRequestReasonMessage('EMPTY_MESSAGE'))
     return
   }
 
+  const settings = await getSongRequestSettings(userId)
+
   if (!settings.enabled) {
     await markEvent(
       donationEventId,
       'ignored',
       'Pedidos de música estão desativados nas configurações.'
+    )
+    return
+  }
+
+  // O valor mínimo é checado antes de qualquer chamada ao Spotify. Antes ele
+  // era validado só depois da busca, gastando rate limit e podendo marcar a
+  // doação como "failed" por falta de conexão mesmo quando seria ignorada.
+  if (donationEvent.amountCents < settings.minAmountCents) {
+    await markEvent(
+      donationEventId,
+      'ignored',
+      `Pedido ignorado: o valor mínimo para pedir música é ${formatBRL(
+        settings.minAmountCents
+      )}.`
     )
     return
   }
@@ -337,11 +424,11 @@ async function applyDonationRules(
   try {
     accessToken = await getSpotifyAccessToken(userId)
   } catch (err) {
-    const message =
+    const reason =
       err instanceof SpotifyError && err.code === 'NOT_CONNECTED'
         ? spotifySongRequestReasonMessage('SPOTIFY_NOT_CONNECTED')
         : 'Não foi possível falar com o Spotify agora. Tente novamente.'
-    await markEvent(donationEventId, 'failed', message)
+    await markEvent(donationEventId, 'failed', reason)
     return
   }
 
@@ -377,17 +464,6 @@ async function applyDonationRules(
     return
   }
 
-  if (amountCents < settings.minAmountCents) {
-    await markEvent(
-      donationEventId,
-      'ignored',
-      `Pedido ignorado: o valor mínimo para pedir música é ${formatBRL(
-        settings.minAmountCents
-      )}.`
-    )
-    return
-  }
-
   try {
     await enqueueSong({
       userId,
@@ -396,11 +472,16 @@ async function applyDonationRules(
     })
 
     await markEvent(donationEventId, 'processed', null)
-  } catch (err) {
+  } catch (error) {
+    logEvent('error', 'donation.enqueue_failed', {
+      userId,
+      donationEventId,
+      error: describeError(error),
+    })
     await markEvent(
       donationEventId,
       'failed',
-      err instanceof Error ? err.message : 'Erro ao adicionar a música à fila.'
+      error instanceof Error ? error.message : 'Erro ao adicionar a música à fila.'
     )
   }
 }
@@ -412,25 +493,35 @@ async function applyDonationRules(
 // Listar doações do usuário autenticado
 donations.get('/', authMiddleware, async (c) => {
   const userId = getUserId(c)
-  const events = await prisma.donationEvent.findMany({
-    where: { userId },
-    orderBy: { createdAt: 'desc' },
-    include: {
-      matchedRule: { select: { id: true, name: true, action: true } },
-      queueItem: {
-        select: {
-          id: true,
-          title: true,
-          artist: true,
-          provider: true,
-          providerId: true,
-          sourceUrl: true,
-          artworkUrl: true,
-          status: true,
+
+  const rawLimit = Number(c.req.query('limit') ?? 200)
+  const limit = Number.isFinite(rawLimit)
+    ? Math.min(Math.max(Math.trunc(rawLimit), 1), 500)
+    : 200
+
+  const [events, total] = await Promise.all([
+    prisma.donationEvent.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+      include: {
+        matchedRule: { select: { id: true, name: true, action: true } },
+        queueItem: {
+          select: {
+            id: true,
+            title: true,
+            artist: true,
+            provider: true,
+            providerId: true,
+            sourceUrl: true,
+            artworkUrl: true,
+            status: true,
+          },
         },
       },
-    },
-  })
+    }),
+    prisma.donationEvent.count({ where: { userId } }),
+  ])
 
   return c.json({
     success: true,
@@ -452,7 +543,7 @@ donations.get('/', authMiddleware, async (c) => {
         createdAt: e.createdAt,
         queueItem: e.queueItem,
       })),
-      total: events.length,
+      total,
     },
   })
 })
@@ -521,7 +612,7 @@ donations.post('/simulate', authMiddleware, zValidator('json', simulateSchema), 
     true
   )
 
-  await applyDonationRules(result.donationId, result.amountCents, result.donorMessage)
+  await applyDonationRules(result.donationId)
 
   const finalEvent = await prisma.donationEvent.findUnique({
     where: { id: result.donationId },

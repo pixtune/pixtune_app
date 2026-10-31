@@ -193,7 +193,9 @@ O frontend é estático (`dist/client`) e é publicado no **Cloudflare Pages**. 
      Pages; o padrão é `https://pixtune-app.onrender.com`.
    - **Não** configure `VITE_API_URL` apontando para `onrender.com`. Deixe vazio
      (o cliente usa a mesma origem da página) ou use a origem pública do Pages.
-     Isso é o que mantém os cookies first-party no Brave/Safari/Firefox.
+     Se a variável apontar para outra origem, o cliente a ignora e usa `/api`
+     same-origin, justamente para não reintroduzir o bloqueio de cookies no
+     Brave/Safari/Firefox.
    - Cadastre o domínio do Pages em `CORS_ORIGINS` na API e nas Redirect URIs do Spotify.
 4. **Banco:** antes do primeiro deploy funcional, siga a estratégia de
    [`docs/database-migration.md`](docs/database-migration.md). Não use `prisma db push` em produção.

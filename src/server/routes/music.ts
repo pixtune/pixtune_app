@@ -4,10 +4,10 @@ import { zValidator } from '@hono/zod-validator'
 import { authMiddleware, getUserId } from '../middleware/auth.js'
 import prisma from '../lib/prisma.js'
 import {
-  donationAmountCents,
   findActiveItem,
-  findNextPlayable,
   finishCurrent,
+  finishQueueItem,
+  promoteNextPlayable,
   queueItemInclude,
   startQueueItem,
 } from '../services/queuePriority.js'
@@ -15,7 +15,9 @@ import { extractSpotifyTrackId } from '../../shared/spotify.js'
 import {
   fetchSpotifyTrack,
   getSpotifyAccessToken,
+  spotifyErrorStatus,
   SpotifyError,
+  withSpotifyAccessToken,
 } from '../services/spotify.js'
 
 const music = new Hono()
@@ -51,8 +53,7 @@ function spotifyError(c: any, error: unknown) {
   const code = error instanceof SpotifyError ? error.code : 'SPOTIFY_UNAVAILABLE'
   const message =
     error instanceof Error ? error.message : 'Não foi possível falar com o Spotify.'
-  const status = code === 'NOT_CONNECTED' ? 401 : 502
-  return c.json({ success: false, error: { code, message } }, status)
+  return c.json({ success: false, error: { code, message } }, spotifyErrorStatus(error))
 }
 
 // Catálogo de músicas da fila do usuário
@@ -71,15 +72,26 @@ music.get('/catalog', authMiddleware, async (c) => {
       providerId: true,
       sourceUrl: true,
     },
-    distinct: ['title', 'artist'],
-    take: 50,
+    orderBy: { createdAt: 'desc' },
+    take: 100,
+  })
+
+  // Deduplica por título+artista mantendo a ordem (mais recente primeiro).
+  // Fazer isso no banco com distinct + orderBy pode gerar SQL inválido no
+  // PostgreSQL (DISTINCT ON exige a mesma ordem).
+  const seen = new Set<string>()
+  const unique = tracks.filter((track) => {
+    const key = `${track.title}\u0000${track.artist || ''}`.toLowerCase()
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
   })
 
   return c.json({
     success: true,
     data: {
-      tracks,
-      total: tracks.length,
+      tracks: unique.slice(0, 50),
+      total: Math.min(unique.length, 50),
     },
   })
 })
@@ -140,8 +152,9 @@ music.post(
     }
 
     try {
-      const accessToken = await getSpotifyAccessToken(userId)
-      const track = await fetchSpotifyTrack(accessToken, trackId)
+      const track = await withSpotifyAccessToken(userId, (accessToken) =>
+        fetchSpotifyTrack(accessToken, trackId)
+      )
       return c.json({ success: true, data: track })
     } catch (error) {
       return spotifyError(c, error)
@@ -181,21 +194,26 @@ music.post('/play', authMiddleware, async (c) => {
     })
   }
 
-  // Se já existe uma faixa ativa, retomá-la — a menos que uma doação de valor
-  // maior esteja esperando na fila.
-  const [active, next] = await Promise.all([
-    findActiveItem(userId),
-    findNextPlayable(userId),
-  ])
+  // Sem trackId: a faixa ativa é retomada, a menos que uma doação de valor
+  // maior esteja esperando. promoteNextPlayable decide isso e já marca a
+  // próxima como playing na mesma transação.
+  const promoted = await promoteNextPlayable(userId)
 
-  if (active && (!next || donationAmountCents(active) >= donationAmountCents(next))) {
-    const playing = await markPlaying(active.id)
-    return c.json({ success: true, data: { isPlaying: true, track: trackPayload(playing) } })
+  if (promoted) {
+    if (promoted.status === 'paused') {
+      const playing = await markPlaying(promoted.id)
+      return c.json({ success: true, data: { isPlaying: true, track: trackPayload(playing) } })
+    }
+    return c.json({
+      success: true,
+      data: { isPlaying: true, track: trackPayload(promoted) },
+    })
   }
 
-  if (next) {
-    await finishCurrent(userId, active ? 'skipped' : 'played')
-    const playing = await markPlaying(next.id)
+  // Sem pendentes: retoma a faixa pausada, se existir.
+  const active = await findActiveItem(userId)
+  if (active) {
+    const playing = await markPlaying(active.id)
     return c.json({ success: true, data: { isPlaying: true, track: trackPayload(playing) } })
   }
 
@@ -224,26 +242,44 @@ music.post('/next-track', authMiddleware, async (c) => {
   const userId = getUserId(c)
 
   await finishCurrent(userId, 'skipped')
-  const next = await findNextPlayable(userId)
+  const promoted = await promoteNextPlayable(userId)
 
-  if (next) {
-    const playing = await markPlaying(next.id)
-    return c.json({ success: true, data: { skipped: true, track: trackPayload(playing) } })
+  if (promoted) {
+    return c.json({ success: true, data: { skipped: true, track: trackPayload(promoted) } })
   }
 
   return c.json({ success: true, data: { skipped: true, track: null } })
 })
 
-// Faixa terminou naturalmente: marca como tocada e promove a próxima
+// Faixa terminou naturalmente: marca como tocada e promove a próxima.
+// O body pode trazer trackId; se o callback chegar duplicado, ele não encerra
+// a faixa seguinte que já foi promovida.
 music.post('/ended', authMiddleware, async (c) => {
   const userId = getUserId(c)
+  const body = (await c.req.json().catch(() => null)) as { trackId?: unknown } | null
+  const trackId =
+    typeof body?.trackId === 'string' && body.trackId.trim() ? body.trackId.trim() : null
 
-  await finishCurrent(userId, 'played')
-  const next = await findNextPlayable(userId)
+  if (trackId) {
+    const finished = await finishQueueItem(userId, trackId, 'played')
+    if (finished === 0) {
+      // Callback duplicado/atrasado: devolve a faixa ativa sem promover outra.
+      const active = await findActiveItem(userId)
+      if (active) {
+        return c.json({
+          success: true,
+          data: { track: trackPayload(active), duplicate: true },
+        })
+      }
+    }
+  } else {
+    await finishCurrent(userId, 'played')
+  }
 
-  if (next) {
-    const playing = await markPlaying(next.id)
-    return c.json({ success: true, data: { track: trackPayload(playing) } })
+  const promoted = await promoteNextPlayable(userId)
+
+  if (promoted) {
+    return c.json({ success: true, data: { track: trackPayload(promoted) } })
   }
 
   return c.json({ success: true, data: { track: null } })

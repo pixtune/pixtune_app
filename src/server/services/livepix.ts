@@ -682,12 +682,19 @@ export async function getOrCreateWebhookToken(userId: string): Promise<string> {
 /** Resolve o userId a partir do token de webhook. */
 export async function findUserIdByWebhookToken(token: string): Promise<string | null> {
   if (!token) return null
-  const integrations = await prisma.integration.findMany({
-    where: { type: 'livepix' },
+
+  // O token é hexadecimal (48 chars) e fica no metadata JSON. Filtrar no banco
+  // evita carregar todas as integrações; a comparação exata abaixo descarta
+  // qualquer falso positivo de substring.
+  const candidates = await prisma.integration.findMany({
+    where: { type: 'livepix', metadata: { contains: token } },
+    select: { userId: true, metadata: true },
+    take: 10,
   })
-  for (const integration of integrations) {
+
+  for (const integration of candidates) {
     const meta = parseMetadata(integration.metadata)
-    if (meta.webhookToken && meta.webhookToken === token) return integration.userId
+    if (meta.webhookToken === token) return integration.userId
   }
   return null
 }

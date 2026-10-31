@@ -57,15 +57,15 @@ queue.get('/', authMiddleware, async (c) => {
 
 // Adicionar item à fila
 const addSchema = z.object({
-  title: z.string().min(1),
-  artist: z.string().optional(),
-  album: z.string().optional(),
-  artworkUrl: z.string().optional(),
-  durationMs: z.number().optional(),
-  sourceUrl: z.string().optional(),
-  provider: z.string().default('spotify'),
-  providerId: z.string().optional(),
-  position: z.number().optional(),
+  title: z.string().trim().min(1).max(300),
+  artist: z.string().trim().max(300).optional(),
+  album: z.string().trim().max(300).optional(),
+  artworkUrl: z.string().trim().max(2000).optional(),
+  durationMs: z.number().int().min(0).max(24 * 60 * 60 * 1000).optional(),
+  sourceUrl: z.string().trim().max(2000).optional(),
+  provider: z.enum(['spotify', 'demo']).default('spotify'),
+  providerId: z.string().trim().max(200).optional(),
+  position: z.number().int().min(0).max(100_000).optional(),
 })
 
 queue.post('/', authMiddleware, zValidator('json', addSchema), async (c) => {
@@ -98,42 +98,37 @@ queue.post('/', authMiddleware, zValidator('json', addSchema), async (c) => {
     normalizedProviderId = spotifyId
     normalizedSourceUrl = sourceUrl || spotifyTrackUrl(spotifyId)
     normalizedArtworkUrl = artworkUrl
-  } else if (provider !== 'demo') {
-    return c.json(
-      {
-        success: false,
-        error: {
-          code: 'UNSUPPORTED_PROVIDER',
-          message: 'O PixTune trabalha apenas com faixas do Spotify.',
-        },
-      },
-      400
-    )
   }
 
-  const newPosition = position !== undefined ? position : (await prisma.queueItem.count({ where: { userId } }))
+  // Contagem, deslocamento e criação no mesmo transaction: duas adições
+  // simultâneas não podem calcular a mesma posição nem intercalar updates.
+  const item = await prisma.$transaction(async (tx) => {
+    const newPosition =
+      position !== undefined
+        ? position
+        : await tx.queueItem.count({ where: { userId } })
 
-  // Deslocar posições existentes
-  await prisma.queueItem.updateMany({
-    where: { userId, position: { gte: newPosition } },
-    data: { position: { increment: 1 } },
-  })
+    await tx.queueItem.updateMany({
+      where: { userId, position: { gte: newPosition } },
+      data: { position: { increment: 1 } },
+    })
 
-  const item = await prisma.queueItem.create({
-    data: {
-      userId,
-      title,
-      artist,
-      album,
-      artworkUrl: normalizedArtworkUrl,
-      durationMs,
-      sourceUrl: normalizedSourceUrl,
-      provider: normalizedProvider,
-      providerId: normalizedProviderId,
-      position: newPosition,
-      addedBy: 'streamer',
-      status: 'pending',
-    },
+    return tx.queueItem.create({
+      data: {
+        userId,
+        title,
+        artist,
+        album,
+        artworkUrl: normalizedArtworkUrl,
+        durationMs,
+        sourceUrl: normalizedSourceUrl,
+        provider: normalizedProvider,
+        providerId: normalizedProviderId,
+        position: newPosition,
+        addedBy: 'streamer',
+        status: 'pending',
+      },
+    })
   })
 
   return c.json({ success: true, data: trackPayload(item) }, 201)
@@ -213,68 +208,86 @@ queue.delete('/:id', authMiddleware, async (c) => {
     )
   }
 
-  await prisma.queueItem.delete({ where: { id } })
+  // Remover e reindexar no mesmo transaction para não deixar posições
+  // duplicadas se outra requisição chegar no meio.
+  await prisma.$transaction(async (tx) => {
+    await tx.queueItem.delete({ where: { id } })
 
-  // Reindexar posições
-  const remaining = await prisma.queueItem.findMany({
-    where: { userId },
-    orderBy: { position: 'asc' },
-  })
-  for (let i = 0; i < remaining.length; i++) {
-    await prisma.queueItem.update({
-      where: { id: remaining[i].id },
-      data: { position: i },
+    const remaining = await tx.queueItem.findMany({
+      where: { userId },
+      orderBy: { position: 'asc' },
+      select: { id: true },
     })
-  }
+    for (let i = 0; i < remaining.length; i++) {
+      await tx.queueItem.update({
+        where: { id: remaining[i].id },
+        data: { position: i },
+      })
+    }
+  })
 
   return c.json({ success: true, data: { removed: id } })
 })
 
 // Reordenar fila
-queue.patch('/reorder', authMiddleware, zValidator('json', z.object({ fromIndex: z.number(), toIndex: z.number() })), async (c) => {
-  const userId = getUserId(c)
-  const { fromIndex, toIndex } = c.req.valid('json')
-
-  const donationItems = await prisma.queueItem.count({
-    where: { userId, status: 'pending', donationEventId: { not: null } },
-  })
-  if (donationItems > 0) {
-    return c.json(
-      {
-        success: false,
-        error: {
-          code: 'PRIORITY_LOCKED',
-          message: 'A ordem das músicas doadas é definida pelo valor da doação e não pode ser alterada.',
-        },
-      },
-      409
-    )
-  }
-
-  const items = await prisma.queueItem.findMany({
-    where: { userId },
-    orderBy: { position: 'asc' },
-  })
-
-  if (fromIndex < 0 || fromIndex >= items.length || toIndex < 0 || toIndex >= items.length) {
-    return c.json(
-      { success: false, error: { code: 'INVALID_INDEX', message: 'Índice inválido' } },
-      400
-    )
-  }
-
-  const [moved] = items.splice(fromIndex, 1)
-  items.splice(toIndex, 0, moved)
-
-  for (let i = 0; i < items.length; i++) {
-    await prisma.queueItem.update({
-      where: { id: items[i].id },
-      data: { position: i },
+queue.patch(
+  '/reorder',
+  authMiddleware,
+  zValidator(
+    'json',
+    z.object({
+      fromIndex: z.number().int().min(0),
+      toIndex: z.number().int().min(0),
     })
-  }
+  ),
+  async (c) => {
+    const userId = getUserId(c)
+    const { fromIndex, toIndex } = c.req.valid('json')
 
-  return c.json({ success: true, data: { items } })
-})
+    const donationItems = await prisma.queueItem.count({
+      where: { userId, status: 'pending', donationEventId: { not: null } },
+    })
+    if (donationItems > 0) {
+      return c.json(
+        {
+          success: false,
+          error: {
+            code: 'PRIORITY_LOCKED',
+            message:
+              'A ordem das músicas doadas é definida pelo valor da doação e não pode ser alterada.',
+          },
+        },
+        409
+      )
+    }
+
+    const items = await prisma.queueItem.findMany({
+      where: { userId },
+      orderBy: { position: 'asc' },
+    })
+
+    if (fromIndex >= items.length || toIndex >= items.length) {
+      return c.json(
+        { success: false, error: { code: 'INVALID_INDEX', message: 'Índice inválido' } },
+        400
+      )
+    }
+
+    const [moved] = items.splice(fromIndex, 1)
+    items.splice(toIndex, 0, moved)
+
+    await prisma.$transaction(async (tx) => {
+      for (let i = 0; i < items.length; i++) {
+        await tx.queueItem.update({
+          where: { id: items[i].id },
+          data: { position: i },
+        })
+      }
+    })
+
+    return c.json({ success: true, data: { items } })
+  }
+)
 
 // Limpar fila
 queue.delete('/', authMiddleware, async (c) => {
@@ -298,12 +311,14 @@ queue.post('/shuffle', authMiddleware, async (c) => {
   }
 
   const slots = items.map((item) => item.position).sort((a, b) => a - b)
-  for (let i = 0; i < items.length; i++) {
-    await prisma.queueItem.update({
-      where: { id: items[i].id },
-      data: { position: slots[i] },
-    })
-  }
+  await prisma.$transaction(async (tx) => {
+    for (let i = 0; i < items.length; i++) {
+      await tx.queueItem.update({
+        where: { id: items[i].id },
+        data: { position: slots[i] },
+      })
+    }
+  })
 
   return c.json({
     success: true,

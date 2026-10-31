@@ -52,6 +52,7 @@ export function SpotifySettings({
   const premium = status?.premium ?? false
 
   async function handleConnect() {
+    if (busy) return
     setBusy(true)
     setFeedback('')
     try {
@@ -74,6 +75,7 @@ export function SpotifySettings({
   }
 
   async function handleRefresh() {
+    if (busy) return
     setBusy(true)
     setFeedback('')
     try {
@@ -92,6 +94,7 @@ export function SpotifySettings({
   }
 
   async function handleDisconnect() {
+    if (busy) return
     if (!window.confirm('Desconectar a conta do Spotify do PixTune?')) return
     setBusy(true)
     setFeedback('')

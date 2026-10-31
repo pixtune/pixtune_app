@@ -6,11 +6,9 @@
  * duração, necessário para registrar o dispositivo Spotify Connect.
  */
 
-import crypto from 'crypto'
-import JWT from 'jsonwebtoken'
 import { Hono } from 'hono'
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
-import { authMiddleware, getUserId } from '../middleware/auth.js'
+import { authMiddleware, getUserId, resolveSessionUser } from '../middleware/auth.js'
 import prisma from '../lib/prisma.js'
 import {
   SPOTIFY_SCOPES,
@@ -27,67 +25,25 @@ import {
   parseSpotifyScopes,
   searchSpotifyTracks,
   spotifyConnectRedirectUri,
+  spotifyErrorStatus,
   SpotifyError,
+  withSpotifyAccessToken,
   type SpotifyProfile,
 } from '../services/spotify.js'
 import { extractSpotifyPlaylistId, extractSpotifyTrackId } from '../../shared/spotify.js'
 import { describeError, logEvent } from '../lib/logger.js'
+import {
+  appUrl,
+  createOAuthAttempt,
+  isProduction,
+  oauthCookieClearOptions,
+  oauthCookieOptions,
+  oauthNonceCookieName,
+  signOAuthState,
+  verifyOAuthState,
+} from '../lib/spotifyOAuth.js'
 
 const spotify = new Hono()
-
-const OAUTH_NONCE_COOKIE = 'pixtune_spotify_nonce'
-const JWT_SECRET = process.env.JWT_SECRET || 'fallback-secret-change-in-production'
-
-interface SpotifyOAuthState {
-  kind: 'spotify_start' | 'spotify'
-  nonce: string
-  userId?: string
-}
-
-function appUrl(path: string): string {
-  const base = (process.env.APP_URL || 'http://localhost:3000').replace(/\/$/, '')
-  return `${base}${path}`
-}
-
-function isProduction(): boolean {
-  return process.env.NODE_ENV === 'production'
-}
-
-function cookieOptions() {
-  // Em produção o frontend e a API são expostos no mesmo domínio pelo proxy
-  // do Cloudflare Pages. Ainda usamos SameSite=None + Secure para manter
-  // compatibilidade com acesso direto à API em HTTPS; em desenvolvimento
-  // local usamos Lax para funcionar em http://localhost.
-  const secure = isProduction()
-  return {
-    httpOnly: true,
-    sameSite: (secure ? 'None' : 'Lax') as 'None' | 'Lax',
-    path: '/',
-    maxAge: 600,
-    secure,
-  }
-}
-
-function createNonce(): string {
-  return crypto.randomBytes(16).toString('hex')
-}
-
-function signState(payload: SpotifyOAuthState): string {
-  return JWT.sign(payload, JWT_SECRET, { expiresIn: '10m' })
-}
-
-function verifyState(token: string): SpotifyOAuthState | null {
-  try {
-    const decoded = JWT.verify(token, JWT_SECRET)
-    if (!decoded || typeof decoded === 'string') return null
-    const state = decoded as SpotifyOAuthState
-    if (!state.kind || !state.nonce) return null
-    if (state.kind !== 'spotify_start' && state.kind !== 'spotify') return null
-    return state
-  } catch {
-    return null
-  }
-}
 
 function parseMetadata(raw: string | null | undefined): Record<string, unknown> {
   if (!raw) return {}
@@ -114,7 +70,12 @@ function parseScopes(raw: string | null | undefined): string[] {
   }
 }
 
-function errorResponse(c: any, code: string, message: string, status: 400 | 401 | 404 | 409 | 422 | 502) {
+function errorResponse(
+  c: any,
+  code: string,
+  message: string,
+  status: 400 | 401 | 403 | 404 | 409 | 422 | 429 | 500 | 502 | 503
+) {
   return c.json({ success: false, error: { code, message } }, status)
 }
 
@@ -175,19 +136,27 @@ spotify.post('/connect-url', authMiddleware, (c) => {
   }
 
   const userId = getUserId(c)
-  const nonce = createNonce()
-  const startToken = signState({ kind: 'spotify_start', nonce, userId })
+  const { attemptId, nonce } = createOAuthAttempt()
+  const startToken = signOAuthState({
+    kind: 'spotify_start',
+    flow: 'connect',
+    attemptId,
+    nonce,
+    userId,
+  })
   const config = getSpotifyConfig()!
 
   // Amarra o início do OAuth ao navegador autenticado. Sem isso, um link
   // /start gerado por outra conta poderia conectar o Spotify da vítima à
-  // conta errada (OAuth login CSRF).
-  setCookie(c, OAUTH_NONCE_COOKIE, nonce, cookieOptions())
+  // conta errada (OAuth login CSRF). O nome do cookie inclui o attemptId:
+  // tentativas simultâneas não sobrescrevem o nonce uma da outra.
+  setCookie(c, oauthNonceCookieName(attemptId), nonce, oauthCookieOptions())
 
   logEvent('info', 'spotify.connect_url', {
     userId,
     origin: c.req.header('origin') || null,
     cookieSecure: isProduction(),
+    redirectUri: config.connectRedirectUri,
   })
 
   return c.json({
@@ -201,14 +170,16 @@ spotify.post('/connect-url', authMiddleware, (c) => {
   })
 })
 
-spotify.get('/start', (c) => {
+spotify.get('/start', async (c) => {
   const startToken = c.req.query('ct')
-  const state = startToken ? verifyState(startToken) : null
-  const cookieNonce = getCookie(c, OAUTH_NONCE_COOKIE)
+  const state = startToken ? verifyOAuthState(startToken) : null
+  const cookieName = state ? oauthNonceCookieName(state.attemptId) : null
+  const cookieNonce = cookieName ? getCookie(c, cookieName) : undefined
 
   if (
     !state ||
     state.kind !== 'spotify_start' ||
+    state.flow !== 'connect' ||
     !state.userId ||
     !cookieNonce ||
     state.nonce !== cookieNonce
@@ -218,11 +189,13 @@ spotify.get('/start', (c) => {
         ? 'invalid_state'
         : state.kind !== 'spotify_start'
           ? 'wrong_state_kind'
-          : !state.userId
-            ? 'missing_user'
-            : !cookieNonce
-              ? 'missing_nonce_cookie'
-              : 'nonce_mismatch',
+          : state.flow !== 'connect'
+            ? 'wrong_flow'
+            : !state.userId
+              ? 'missing_user'
+              : !cookieNonce
+                ? 'missing_nonce_cookie'
+                : 'nonce_mismatch',
       hasState: Boolean(state),
       hasUserId: Boolean(state?.userId),
       hasNonceCookie: Boolean(cookieNonce),
@@ -233,7 +206,25 @@ spotify.get('/start', (c) => {
     return c.redirect(appUrl('/settings?section=spotify&spotify=not_configured'))
   }
 
-  const oauthState = signState({ kind: 'spotify', nonce: state.nonce, userId: state.userId })
+  // A conexão pertence a um usuário PixTune. Se a sessão expirou ou trocou
+  // entre o clique e o redirect, não conecte a conta ao usuário errado.
+  const sessionUser = await resolveSessionUser(c)
+  if (!sessionUser || sessionUser.id !== state.userId) {
+    logEvent('warn', 'spotify.start_rejected', {
+      reason: !sessionUser ? 'missing_session' : 'session_user_mismatch',
+      stateUserId: state.userId,
+      sessionUserId: sessionUser?.id ?? null,
+    })
+    return c.redirect(appUrl('/settings?section=spotify&spotify=session'))
+  }
+
+  const oauthState = signOAuthState({
+    kind: 'spotify',
+    flow: 'connect',
+    attemptId: state.attemptId,
+    nonce: state.nonce,
+    userId: state.userId,
+  })
   return c.redirect(
     buildSpotifyAuthUrl({ state: oauthState, redirectUri: spotifyConnectRedirectUri() })
   )
@@ -243,15 +234,31 @@ spotify.get('/callback', async (c) => {
   const error = c.req.query('error')
   const code = c.req.query('code')
   const stateToken = c.req.query('state')
-  const cookieNonce = getCookie(c, OAUTH_NONCE_COOKIE)
-  deleteCookie(c, OAUTH_NONCE_COOKIE, { path: '/' })
+  const state = stateToken ? verifyOAuthState(stateToken) : null
+  const cookieName = state ? oauthNonceCookieName(state.attemptId) : null
+  const cookieNonce = cookieName ? getCookie(c, cookieName) : undefined
+  if (cookieName) deleteCookie(c, cookieName, oauthCookieClearOptions())
 
   if (error) {
+    const configError = [
+      'invalid_client',
+      'invalid_request',
+      'unauthorized_client',
+      'redirect_uri_mismatch',
+    ].includes(error)
     logEvent('warn', 'spotify.callback_rejected', {
       reason: 'spotify_error',
       spotifyError: error,
     })
-    return c.redirect(appUrl('/settings?section=spotify&spotify=denied'))
+    return c.redirect(
+      appUrl(
+        configError
+          ? '/settings?section=spotify&spotify=config'
+          : error === 'access_denied'
+            ? '/settings?section=spotify&spotify=denied'
+            : '/settings?section=spotify&spotify=failed'
+      )
+    )
   }
   if (!code || !stateToken) {
     logEvent('warn', 'spotify.callback_rejected', {
@@ -260,10 +267,10 @@ spotify.get('/callback', async (c) => {
     return c.redirect(appUrl('/settings?section=spotify&spotify=invalid'))
   }
 
-  const state = verifyState(stateToken)
   if (
     !state ||
     state.kind !== 'spotify' ||
+    state.flow !== 'connect' ||
     !state.userId ||
     !cookieNonce ||
     state.nonce !== cookieNonce
@@ -273,11 +280,17 @@ spotify.get('/callback', async (c) => {
         ? 'invalid_state'
         : state.kind !== 'spotify'
           ? 'wrong_state_kind'
-          : !state.userId
-            ? 'missing_user'
-            : !cookieNonce
-              ? 'missing_nonce_cookie'
-              : 'nonce_mismatch',
+          : state.flow !== 'connect'
+            ? 'wrong_flow'
+            : !state.userId
+              ? 'missing_user'
+              : !cookieNonce
+                ? 'missing_nonce_cookie'
+                : 'nonce_mismatch',
+      hasState: Boolean(state),
+      hasNonceCookie: Boolean(cookieNonce),
+      callbackHost: c.req.header('host') || null,
+      forwardedHost: c.req.header('x-forwarded-host') || null,
     })
     return c.redirect(appUrl('/settings?section=spotify&spotify=state'))
   }
@@ -358,8 +371,9 @@ spotify.get('/callback', async (c) => {
 
 spotify.post('/token', authMiddleware, async (c) => {
   const userId = getUserId(c)
+  const forceRefresh = c.req.query('force') === '1'
   try {
-    const accessToken = await getSpotifyAccessToken(userId)
+    const accessToken = await getSpotifyAccessToken(userId, fetch, { forceRefresh })
     const integration = await prisma.integration.findUnique({
       where: { userId_type: { userId, type: 'spotify' } },
       select: { expiresAt: true },
@@ -389,14 +403,14 @@ spotify.post('/token', authMiddleware, async (c) => {
           }
         : {}),
     })
-    return errorResponse(c, code, message, code === 'NOT_CONNECTED' ? 401 : 502)
+    return errorResponse(c, code, message, spotifyErrorStatus(error))
   }
 })
 
 spotify.post('/refresh', authMiddleware, async (c) => {
   const userId = getUserId(c)
   try {
-    const accessToken = await getSpotifyAccessToken(userId)
+    const accessToken = await getSpotifyAccessToken(userId, fetch, { forceRefresh: true })
     const profile = await fetchSpotifyProfile(accessToken)
     const integration = await prisma.integration.findUnique({
       where: { userId_type: { userId, type: 'spotify' } },
@@ -433,7 +447,7 @@ spotify.post('/refresh', authMiddleware, async (c) => {
           }
         : {}),
     })
-    return errorResponse(c, 'REFRESH_FAILED', message, 502)
+    return errorResponse(c, 'REFRESH_FAILED', message, spotifyErrorStatus(error))
   }
 })
 
@@ -443,7 +457,12 @@ spotify.post('/disconnect', authMiddleware, async (c) => {
     prisma.integration.deleteMany({ where: { userId, type: 'spotify' } }),
     prisma.settings.upsert({
       where: { userId },
-      update: { musicConnected: false },
+      update: {
+        musicConnected: false,
+        musicAccessToken: null,
+        musicRefreshToken: null,
+        musicTokenExpiresAt: null,
+      },
       create: { userId, musicProvider: 'spotify', musicConnected: false },
     }),
   ])
@@ -457,13 +476,14 @@ spotify.post('/disconnect', authMiddleware, async (c) => {
 spotify.get('/playlists', authMiddleware, async (c) => {
   const userId = getUserId(c)
   try {
-    const accessToken = await getSpotifyAccessToken(userId)
-    const playlists = await fetchSpotifyPlaylists(accessToken)
+    const playlists = await withSpotifyAccessToken(userId, (accessToken) =>
+      fetchSpotifyPlaylists(accessToken)
+    )
     return c.json({ success: true, data: { playlists, total: playlists.length } })
   } catch (error) {
     const code = error instanceof SpotifyError ? error.code : 'PLAYLISTS_FAILED'
     const message = error instanceof Error ? error.message : 'Não foi possível listar as playlists.'
-    return errorResponse(c, code, message, code === 'NOT_CONNECTED' ? 401 : 502)
+    return errorResponse(c, code, message, spotifyErrorStatus(error))
   }
 })
 
@@ -479,8 +499,9 @@ spotify.post('/playlists/:id/import', authMiddleware, async (c) => {
   }
 
   try {
-    const accessToken = await getSpotifyAccessToken(userId)
-    const tracks = await fetchPlaylistTracks(accessToken, playlistId)
+    const tracks = await withSpotifyAccessToken(userId, (accessToken) =>
+      fetchPlaylistTracks(accessToken, playlistId)
+    )
 
     const last = await prisma.queueItem.findFirst({
       where: { userId },
@@ -498,8 +519,22 @@ spotify.post('/playlists/:id/import', authMiddleware, async (c) => {
     })
     const existingIds = new Set(existing.map((item) => item.providerId).filter(Boolean))
     let position = (last?.position ?? -1) + 1
-    let imported = 0
     let skipped = 0
+    const rows: Array<{
+      userId: string
+      title: string
+      artist: string
+      album?: string
+      artworkUrl?: string
+      durationMs: number | null
+      sourceUrl: string
+      provider: string
+      providerId: string
+      position: number
+      addedBy: string
+      status: string
+      playedAt: null
+    }> = []
 
     for (const track of tracks) {
       if (existingIds.has(track.id)) {
@@ -507,25 +542,26 @@ spotify.post('/playlists/:id/import', authMiddleware, async (c) => {
         continue
       }
 
-      await prisma.queueItem.create({
-        data: {
-          userId,
-          title: track.title,
-          artist: track.artist,
-          album: track.album,
-          artworkUrl: track.artworkUrl,
-          durationMs: track.durationMs || null,
-          sourceUrl: track.sourceUrl,
-          provider: 'spotify',
-          providerId: track.id,
-          position: position++,
-          addedBy: 'playlist',
-          status: 'pending',
-          playedAt: null,
-        },
+      rows.push({
+        userId,
+        title: track.title,
+        artist: track.artist,
+        album: track.album,
+        artworkUrl: track.artworkUrl,
+        durationMs: track.durationMs || null,
+        sourceUrl: track.sourceUrl,
+        provider: 'spotify',
+        providerId: track.id,
+        position: position++,
+        addedBy: 'playlist',
+        status: 'pending',
+        playedAt: null,
       })
       existingIds.add(track.id)
-      imported += 1
+    }
+
+    if (rows.length > 0) {
+      await prisma.queueItem.createMany({ data: rows })
     }
 
     await prisma.settings.upsert({
@@ -536,12 +572,12 @@ spotify.post('/playlists/:id/import', authMiddleware, async (c) => {
 
     return c.json({
       success: true,
-      data: { imported, skipped, total: tracks.length, playlistId },
+      data: { imported: rows.length, skipped, total: tracks.length, playlistId },
     })
   } catch (error) {
     const code = error instanceof SpotifyError ? error.code : 'IMPORT_FAILED'
     const message = error instanceof Error ? error.message : 'Não foi possível importar a playlist.'
-    return errorResponse(c, code, message, code === 'NOT_CONNECTED' ? 401 : 502)
+    return errorResponse(c, code, message, spotifyErrorStatus(error))
   }
 })
 
@@ -558,13 +594,14 @@ spotify.get('/search', authMiddleware, async (c) => {
   }
 
   try {
-    const accessToken = await getSpotifyAccessToken(userId)
-    const tracks = await searchSpotifyTracks(accessToken, query)
+    const tracks = await withSpotifyAccessToken(userId, (accessToken) =>
+      searchSpotifyTracks(accessToken, query)
+    )
     return c.json({ success: true, data: { tracks, total: tracks.length } })
   } catch (error) {
     const code = error instanceof SpotifyError ? error.code : 'SEARCH_FAILED'
     const message = error instanceof Error ? error.message : 'Não foi possível buscar no Spotify.'
-    return errorResponse(c, code, message, code === 'NOT_CONNECTED' ? 401 : 502)
+    return errorResponse(c, code, message, spotifyErrorStatus(error))
   }
 })
 
@@ -583,8 +620,9 @@ spotify.post('/resolve', authMiddleware, async (c) => {
   }
 
   try {
-    const accessToken = await getSpotifyAccessToken(userId)
-    const track = await fetchSpotifyTrack(accessToken, trackId)
+    const track = await withSpotifyAccessToken(userId, (accessToken) =>
+      fetchSpotifyTrack(accessToken, trackId)
+    )
     return c.json({ success: true, data: track })
   } catch (error) {
     const code = error instanceof SpotifyError ? error.code : 'RESOLVE_FAILED'
@@ -593,7 +631,7 @@ spotify.post('/resolve', authMiddleware, async (c) => {
       c,
       code,
       message,
-      code === 'NOT_CONNECTED' ? 401 : code === 'NOT_FOUND' ? 404 : 502
+      spotifyErrorStatus(error)
     )
   }
 })

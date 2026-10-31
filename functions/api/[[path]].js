@@ -15,6 +15,17 @@
 
 const DEFAULT_API_ORIGIN = 'https://pixtune-app.onrender.com'
 
+/**
+ * Separa múltiplos Set-Cookie sem quebrar a vírgula de "Expires=Wed, 21 Oct".
+ * Usado apenas no fallback, quando o runtime não expõe getSetCookie().
+ */
+function splitSetCookie(header) {
+  return header
+    .split(/,(?=\s*[^;,=\s]+=)/g)
+    .map((value) => value.trim())
+    .filter(Boolean)
+}
+
 function apiOrigin(env) {
   const value = (env && env.API_ORIGIN) || DEFAULT_API_ORIGIN
   return value.replace(/\/+$/, '')
@@ -30,6 +41,10 @@ export async function onRequest(context) {
   headers.delete('host')
   // Evita respostas comprimidas que o Worker teria de recompressar.
   headers.delete('accept-encoding')
+  // Diagnóstico seguro: o host público e o protocolo vistos pelo navegador.
+  // O callback precisa acontecer neste host para receber o cookie nonce.
+  headers.set('x-forwarded-host', incomingUrl.host)
+  headers.set('x-forwarded-proto', incomingUrl.protocol.replace(':', ''))
 
   const init = {
     method: request.method,
@@ -60,7 +75,9 @@ export async function onRequest(context) {
     }
   } else {
     const cookie = upstream.headers.get('set-cookie')
-    if (cookie) responseHeaders.append('set-cookie', cookie)
+    for (const value of cookie ? splitSetCookie(cookie) : []) {
+      responseHeaders.append('set-cookie', value)
+    }
   }
 
   // Se a API redirecionar para a própria origem, mantenha o navegador no

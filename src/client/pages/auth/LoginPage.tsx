@@ -1,14 +1,16 @@
 import { Button } from '@client/components/ui/Button'
-import { Music } from 'lucide-react'
+import { Loader2, Music } from 'lucide-react'
 import { useSearchParams } from 'react-router-dom'
 import { useAuth } from '@client/contexts/AuthContext'
 
 const SPOTIFY_ERRORS: Record<string, string> = {
   denied: 'A autorização no Spotify foi cancelada.',
   invalid:
-    'A resposta do Spotify foi inválida ou o cookie de segurança não chegou ao servidor. Tente novamente.',
+    'O Spotify devolveu uma resposta inválida. Tente entrar novamente; se persistir, verifique a URL de callback no Spotify Dashboard.',
   state:
     'A validação de segurança do login falhou. O cookie de segurança não foi enviado; tente novamente em uma janela normal do navegador.',
+  config:
+    'A URL de callback do Spotify não confere com o domínio do PixTune. O administrador precisa cadastrar a URL exibida em Configurações → Spotify.',
   failed:
     'Não foi possível concluir o login. A API registrou a etapa exata da falha; tente novamente em instantes.',
   not_configured: 'O Spotify ainda não está configurado na API.',
@@ -29,7 +31,7 @@ const SPOTIFY_ERRORS: Record<string, string> = {
  * Nenhum formulário. Nenhuma senha.
  */
 export function LoginPage() {
-  const { spotifyLogin, authError } = useAuth()
+  const { spotifyLogin, authError, isConnecting } = useAuth()
   const [searchParams] = useSearchParams()
   const spotifyStatus = searchParams.get('spotify')
   const message = authError || (spotifyStatus ? SPOTIFY_ERRORS[spotifyStatus] : null)
@@ -62,9 +64,19 @@ export function LoginPage() {
           size="lg"
           className="w-full"
           onClick={spotifyLogin}
+          disabled={isConnecting}
         >
-          <Music className="w-5 h-5 mr-2" />
-          Entrar com Spotify
+          {isConnecting ? (
+            <>
+              <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+              Redirecionando...
+            </>
+          ) : (
+            <>
+              <Music className="w-5 h-5 mr-2" />
+              Entrar com Spotify
+            </>
+          )}
         </Button>
 
         <p className="pt-2 text-caption text-pixtune-textMuted">

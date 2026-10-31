@@ -10,10 +10,8 @@
  */
 
 import crypto from 'crypto'
-import JWT, { type SignOptions } from 'jsonwebtoken'
 import prisma from '../lib/prisma.js'
-
-const JWT_SECRET = process.env.JWT_SECRET || 'fallback-secret-change-in-production'
+import { signJwt, verifyJwt } from '../lib/jwt.js'
 
 export interface TokenPayload {
   userId: string
@@ -31,8 +29,7 @@ export interface AuthUser {
 
 /** Gera JWT */
 export function generateToken(payload: TokenPayload, expiresIn = '7d'): string {
-  return JWT.sign(payload, JWT_SECRET, {
-    expiresIn: expiresIn as SignOptions['expiresIn'],
+  return signJwt(payload as unknown as Record<string, unknown>, expiresIn, {
     // Sem o jti, dois logins do mesmo usuário no mesmo segundo geram o mesmo
     // JWT (iat com precisão de segundos), colidindo com Session.token unique.
     jwtid: crypto.randomUUID(),
@@ -41,19 +38,14 @@ export function generateToken(payload: TokenPayload, expiresIn = '7d'): string {
 
 /** Valida JWT e devolve um payload utilizável */
 export function verifyToken(token: string): TokenPayload | null {
-  try {
-    const decoded = JWT.verify(token, JWT_SECRET)
-    if (!decoded || typeof decoded === 'string') return null
+  const decoded = verifyJwt<Partial<TokenPayload>>(token)
+  if (!decoded) return null
 
-    const payload = decoded as JWT.JwtPayload & Partial<TokenPayload>
-    if (typeof payload.userId !== 'string' || !payload.userId) return null
+  if (typeof decoded.userId !== 'string' || !decoded.userId) return null
 
-    return {
-      userId: payload.userId,
-      ...(typeof payload.sessionToken === 'string' ? { sessionToken: payload.sessionToken } : {}),
-    }
-  } catch {
-    return null
+  return {
+    userId: decoded.userId,
+    ...(typeof decoded.sessionToken === 'string' ? { sessionToken: decoded.sessionToken } : {}),
   }
 }
 

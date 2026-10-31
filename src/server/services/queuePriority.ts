@@ -69,6 +69,31 @@ export async function finishCurrent(userId: string, status: 'played' | 'skipped'
   })
 }
 
+/**
+ * Encerra uma faixa específica.
+ *
+ * O callback de "ended" do player pode chegar duplicado (evento do SDK +
+ * timeout). Sem o filtro por trackId, o segundo callback encerrava a faixa
+ * seguinte, que já tinha sido promovida, e pulava música sem necessidade.
+ * Se o trackId não bater com a faixa ativa, nada é alterado.
+ */
+export async function finishQueueItem(
+  userId: string,
+  itemId: string,
+  status: 'played' | 'skipped'
+): Promise<number> {
+  const result = await prisma.queueItem.updateMany({
+    where: {
+      id: itemId,
+      userId,
+      provider: 'spotify',
+      status: { in: ['playing', 'paused'] },
+    },
+    data: { status, playedAt: new Date() },
+  })
+  return result.count
+}
+
 export type StartQueueItemResult =
   | { ok: true; track: any }
   | {
