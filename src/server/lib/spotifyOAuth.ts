@@ -13,11 +13,13 @@
  * tentativa e o callback falhava com "state"/"invalid". Cada tentativa agora
  * tem seu próprio cookie, então tentativas simultâneas não se atrapalham.
  *
- * O cookie é host-only (sem Domain), SameSite=Lax e Secure em produção. O
- * callback precisa acontecer no mesmo domínio em que o cookie foi gravado —
- * por isso o redirect_uri é sempre resolvido para o domínio do APP_URL e o
- * Cloudflare Pages faz proxy de /api para o Render. SameSite=None não é
- * necessário: o retorno do Spotify é uma navegação top-level GET.
+ * O cookie é host-only (sem Domain). Em produção usa SameSite=None + Secure
+ * porque o retorno do Spotify (accounts.spotify.com → pages.dev) é uma
+ * navegação cross-site. SameSite=Lax *deveria* permitir top-level GET, mas
+ * navegadores com proteções agressivas (Safari ITP, Brave Shields) ainda
+ * podem bloquear. O cookie é de uso único, HttpOnly, curta duração (10 min)
+ * e só existe durante o handshake OAuth — risco mínimo.
+ * Em desenvolvimento usa SameSite=Lax (HTTP localhost).
  */
 
 import crypto from 'crypto'
@@ -58,22 +60,30 @@ export function isProduction(): boolean {
 }
 
 export function oauthCookieOptions(maxAge = 600) {
+  const secure = isProduction()
+  // SameSite=None + Secure é necessário em produção porque o callback do
+  // Spotify é uma navegação cross-site (accounts.spotify.com → pages.dev).
+  // SameSite=Lax *deveria* permitir top-level GET, mas navegadores com
+  // proteções agressivas (Safari ITP, Brave Shields) ainda bloqueiam.
+  // O cookie é de uso único (attemptId), HttpOnly, curta duração (10 min)
+  // e só existe durante o handshake OAuth — risco mínimo.
   return {
     httpOnly: true,
-    sameSite: 'Lax' as const,
+    sameSite: secure ? ('None' as const) : ('Lax' as const),
     path: '/',
     maxAge,
-    secure: isProduction(),
-    // Host-only: não define Domain. O cookie precisa ser enviado exatamente
-    // ao host que atende /api (Pages em produção, localhost em dev).
+    secure,
+    // Host-only: não define Domain. O cookie é gravado no domínio do
+    // Cloudflare Pages (via proxy) e lido no callback no mesmo host.
   }
 }
 
 export function oauthCookieClearOptions() {
+  const secure = isProduction()
   return {
     path: '/',
-    secure: isProduction(),
-    sameSite: 'Lax' as const,
+    secure,
+    sameSite: secure ? ('None' as const) : ('Lax' as const),
   }
 }
 
