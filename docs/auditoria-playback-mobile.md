@@ -115,21 +115,53 @@ limitações de autoplay do sistema. O problema era de gesto/estado, não de
 ausência de suporte. Não foi necessário trocar o Spotify por outro serviço,
 alterar a arquitetura ou mexer na integração Live Pix.
 
+### 8. Android Chrome: modo desktop, `autoplay_failed` e “Playback Error” genérico
+
+O caso reportado em Android + Chrome mostrou a mensagem genérica “Não foi
+possível reproduzir no Spotify. Verifique a conexão, o plano Premium...”, mesmo
+com conta Premium de plano Família e desktop funcionando. **O plano Família é
+aceito pelo Web Playback SDK**; a mensagem é apenas o fallback do app quando não
+reconhece a causa real, não uma confirmação de que falta Premium. A investigação
+adicional encontrou três lacunas:
+
+1. **Detecção de mobile pelo user agent.** O modo “Site para desktop” do Chrome
+   no Android troca o UA por um de Linux/Windows. O app passava a se considerar
+   desktop, tentava autoplay sem gesto e o Chrome bloqueava o áudio. Agora a
+   detecção também usa `pointer: coarse`, `maxTouchPoints`, largura da viewport
+   e `navigator.userAgentData.mobile`.
+2. **Evento `autoplay_failed` não era ouvido.** O SDK oficial emite esse evento
+   quando o navegador recusa o áudio. Sem ele, o app só via um
+   `playback_error` genérico e continuava tentando. Agora o evento zera a
+   ativação, para os retries e pede “Toque em Play”.
+3. **`audioUnlocked` não era resetado.** Depois de uma falha, um reconnect ou
+   uma recriação do player, o app achava que o áudio já estava liberado e não
+   chamava `activateElement()` de novo no próximo gesto. Agora toda falha de
+   ativação/reconexão invalida esse estado.
+
+Também foi adicionado:
+
+- tratamento do texto literal `Playback Error` do SDK como autoplay no mobile;
+- painel “Detalhes técnicos” no erro do dashboard, com a mensagem crua do
+  SDK/Web API (sem tokens) para diagnóstico;
+- aviso nas Configurações quando a conexão OAuth não tem `streaming`,
+  `user-read-playback-state` ou `user-modify-playback-state` (conexões antigas
+  precisam ser refeitas).
+
 ## Arquivos alterados
 
 | Arquivo | Mudança |
 | --- | --- |
-| `src/client/player/playbackPolicy.ts` | Políticas puras de mobile/autoplay, backoff e tradução de erros. |
-| `src/client/player/playbackPolicy.test.ts` | 13 testes das políticas e classificadores. |
-| `src/client/player/SpotifyAudioPlayer.tsx` | Player reescrito: init única, ativação por gesto, device/transfer, retry, token force, reconexão, guards de URI e mensagens. |
+| `src/client/player/playbackPolicy.ts` | Políticas puras de mobile/autoplay (inclui modo desktop do Android), backoff e tradução de erros. |
+| `src/client/player/playbackPolicy.test.ts` | 16 testes das políticas e classificadores. |
+| `src/client/player/SpotifyAudioPlayer.tsx` | Player reescrito: init única, ativação por gesto, `autoplay_failed`, reset de ativação, device/transfer, retry, token force, reconexão, guards de URI, detalhe técnico e mensagens. |
 | `src/client/api/client.ts` | `apiSpotify.token(force)` envia `force=1` na query e no corpo. |
 | `src/server/routes/spotify.ts` | `/token` lê `force` da query e do corpo. |
 | `src/server/services/spotify.ts` | `resolveCallbackUri` valida host e path; fallback seguro e logs. |
 | `src/server/services/spotify.test.ts` | Testes de `APP_URL`, host divergente e path divergente. |
-| `src/client/pages/dashboard/DashboardPage.tsx` | Card “Agora tocando” responsivo, loading, aviso de autoplay, erro com retry. |
+| `src/client/pages/dashboard/DashboardPage.tsx` | Card “Agora tocando” responsivo, loading, aviso de autoplay, erro com retry e “Detalhes técnicos”. |
 | `src/client/layouts/AppLayout.tsx` | Indicador do player considera erro de conta e necessidade de ativação. |
 | `src/client/pages/dashboard/QueuePage.tsx` | Avisos de conta/ativação e retomada correta da faixa atual. |
-| `src/client/pages/dashboard/SpotifySettings.tsx` | Orientação sobre Premium mobile e toque em Play. |
+| `src/client/pages/dashboard/SpotifySettings.tsx` | Orientação sobre Premium mobile, toque em Play e aviso de escopos OAuth ausentes. |
 
 Nenhuma alteração em `README.md`, na integração Live Pix, no schema do banco ou
 nas dependências.
@@ -149,7 +181,7 @@ nas dependências.
 
 ```text
 npm run typecheck   -> OK (client + server)
-npm test            -> 13 arquivos, 102 testes, todos passando
+npm test            -> 13 arquivos, 105 testes, todos passando
 npm run build       -> OK (Vite client + tsc server)
 ```
 
@@ -159,8 +191,10 @@ configuração do ESLint (comportamento preexistente, não introduzido aqui).
 ### Testes automatizados relevantes
 
 - detecção de Android/iPhone/iPad e iPadOS disfarçado de MacIntel;
+- detecção de Android em “Site para desktop” por ponteiro coarse e Client Hint;
 - bloqueio de autoplay mobile até `audioUnlocked`;
 - liberação após ativação e bloqueio após falha de ativação;
+- `Playback Error` genérico do SDK tratado como autoplay no mobile;
 - backoff exponencial limitado;
 - classificação de autoplay, Premium, device, DRM, auth, restrição e rate limit;
 - prioridade de restrição sobre o prefixo genérico “Player command failed”;
@@ -234,10 +268,16 @@ API_ORIGIN=https://pixtune-app.onrender.com
 Teste do proxy:
 
 ```text
-https://pixtune-app.pages.dev/api/health
+https://pixtune-app.pages.dev/api/spotify/status
 ```
 
-A resposta deve vir da API do Render sem sair do domínio `pages.dev`.
+Sem sessão, a resposta correta é `401 UNAUTHORIZED` em JSON vindo do Render. Isso
+prova que o caminho `/api/*` está chegando à API sem sair do domínio `pages.dev`.
+
+O health check da API é `https://pixtune-app.onrender.com/health` (rota `/health`,
+não `/api/health`). O proxy do Pages só intercepta `/api/*`; por isso
+`https://pixtune-app.pages.dev/api/health` retorna `404` e não deve ser usado como
+teste.
 
 ## Checklist manual pós-deploy
 
@@ -262,6 +302,13 @@ A resposta deve vir da API do Render sem sair do domínio `pages.dev`.
 
 ### Android (Chrome)
 
+- [ ] Confirmar que o menu do Chrome está **sem** “Site para desktop” marcado.
+- [ ] Desativar temporariamente “Modo Lite”, economia de dados, VPN, DNS privado
+      com bloqueio e extensões/bloqueadores que afetem `spotify.com`.
+- [ ] Fechar/forçar parada do app Spotify no celular durante o teste; o app pode
+      disputar o dispositivo Connect.
+- [ ] Em `chrome://settings/content/sound`, permitir som para
+      `pixtune-app.pages.dev`; em Autoplay, usar “Perguntar” ou “Permitir”.
 - [ ] Abrir o dashboard e confirmar que o áudio **não** começa sozinho.
 - [ ] Tocar em Play: o áudio começa após o gesto.
 - [ ] Pausar/retomar mantém a posição.
@@ -269,6 +316,8 @@ A resposta deve vir da API do Render sem sair do domínio `pages.dev`.
 - [ ] Bloquear/desbloquear a tela e voltar ao navegador: player reconecta.
 - [ ] Alternar Wi-Fi/4G: player reconecta ou mostra “Tentar novamente”.
 - [ ] Conta sem Premium mostra a mensagem específica, sem loop.
+- [ ] Se o erro persistir, abrir **Detalhes técnicos** no card de erro e enviar o
+      texto cru (sem tokens) para identificar a causa exata.
 
 ### iOS (Safari)
 
@@ -284,7 +333,8 @@ A resposta deve vir da API do Render sem sair do domínio `pages.dev`.
 - [ ] Console sem tokens, Client Secret ou Authorization header.
 - [ ] Logs do Render sem `redirect_uri_host_mismatch`/`path_mismatch` em uso
       normal.
-- [ ] `/api/health` responde pelo proxy do Pages.
+- [ ] `https://pixtune-app.onrender.com/health` responde `200` com `{"status":"ok"}`.
+- [ ] `https://pixtune-app.pages.dev/api/spotify/status` responde `401` JSON (proxy funcionando).
 
 ## Rollback
 

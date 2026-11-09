@@ -50,6 +50,13 @@ export function SpotifySettings({
   const connected = status?.connected ?? false
   const profile = status?.profile ?? null
   const premium = status?.premium ?? false
+  // O Web Playback SDK precisa destas permissões. Conexões antigas podem ter
+  // sido criadas antes de o PixTune pedir `streaming`, e nesse caso o device
+  // conecta mas o Spotify recusa o play com 403.
+  const requiredScopes = ['streaming', 'user-read-playback-state', 'user-modify-playback-state']
+  const missingScopes = connected
+    ? requiredScopes.filter((scope) => !(status?.scopes ?? []).includes(scope))
+    : []
 
   async function handleConnect() {
     if (busy) return
@@ -235,6 +242,17 @@ export function SpotifySettings({
                 <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" />
                 Esta conta não é Premium. O player não vai reproduzir áudio até a conta ser
                 atualizada no Spotify.
+              </p>
+            )}
+
+            {missingScopes.length > 0 && (
+              <p className="flex items-start gap-2 rounded-lg border border-pixtune-warning/40 bg-pixtune-warning/10 p-3 text-caption text-pixtune-warning">
+                <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" />
+                <span>
+                  Esta conexão está sem permissões de reprodução ({missingScopes.join(', ')}).
+                  Desconecte e conecte a conta novamente para o Spotify liberar o player neste
+                  navegador.
+                </span>
               </p>
             )}
 

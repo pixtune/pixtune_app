@@ -13,6 +13,12 @@ export interface BrowserInfo {
   userAgent?: string
   platform?: string
   maxTouchPoints?: number
+  /** `matchMedia('(pointer: coarse)').matches` — independe do modo desktop. */
+  coarsePointer?: boolean
+  /** Largura da viewport em CSS px. */
+  screenWidth?: number
+  /** `navigator.userAgentData.mobile`, quando o navegador expõe. */
+  userAgentMobile?: boolean
 }
 
 /**
@@ -20,11 +26,18 @@ export interface BrowserInfo {
  *
  * O iPadOS 13+ se apresenta como "MacIntel"; por isso também olhamos para
  * `maxTouchPoints`, que é maior que 1 em iPads com tela touch.
+ *
+ * O modo "Site para desktop" do Chrome no Android troca o user agent por um
+ * de Linux/Windows. Se classificássemos como desktop, o PixTune tentaria
+ * autoplay sem gesto e o Chrome bloquearia o áudio. Por isso o ponteiro
+ * coarse/touch também conta como mobile em telas pequenas.
  */
 export function isMobileBrowser(info: BrowserInfo = {}): boolean {
   const userAgent = info.userAgent || ''
   const platform = info.platform || ''
   const maxTouchPoints = info.maxTouchPoints || 0
+  const coarsePointer = info.coarsePointer === true
+  const screenWidth = info.screenWidth || 0
 
   if (
     /Android|iPhone|iPad|iPod|Mobile|CriOS|FxiOS|EdgiOS|Opera Mini|IEMobile/i.test(
@@ -34,7 +47,13 @@ export function isMobileBrowser(info: BrowserInfo = {}): boolean {
     return true
   }
 
-  return platform === 'MacIntel' && maxTouchPoints > 1
+  if (info.userAgentMobile === true) return true
+
+  if (platform === 'MacIntel' && maxTouchPoints > 1) return true
+
+  // Android/iPad em "Site para desktop": UA desktop, mas entrada por toque e
+  // viewport estreita. Tablets grandes (>= 1025 CSS px) ficam de fora.
+  return coarsePointer && maxTouchPoints > 0 && screenWidth > 0 && screenWidth <= 1024
 }
 
 export interface AutoplayPolicyInput {
@@ -68,6 +87,15 @@ export function nextReconnectDelay(attempt: number): number {
 
 function normalizeReason(message?: string | null): string {
   return (message || '').toLowerCase()
+}
+
+/**
+ * O SDK do Spotify usa a mensagem genérica "Playback Error" em alguns
+ * bloqueios de áudio no Chrome Android. Sem tratá-la como autoplay, o app
+ * mostrava "verifique a conexão/plano" e repetia a tentativa sem gesto.
+ */
+export function isAmbiguousSdkPlaybackError(message?: string | null): boolean {
+  return normalizeReason(message).trim() === 'playback error'
 }
 
 /** O navegador bloqueou a reprodução automática / exige um gesto. */
@@ -231,6 +259,9 @@ export function playbackErrorMessage(
   const text = normalizeReason(message)
 
   if (isPremiumReason(text)) return SPOTIFY_PREMIUM_MESSAGE
+  if (context.mobile && isAmbiguousSdkPlaybackError(text)) {
+    return SPOTIFY_MOBILE_AUTOPLAY_MESSAGE
+  }
   if (isAutoplayBlockedReason(text)) {
     return context.mobile ? SPOTIFY_MOBILE_AUTOPLAY_MESSAGE : SPOTIFY_AUTOPLAY_MESSAGE
   }

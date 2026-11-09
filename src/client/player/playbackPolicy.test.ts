@@ -28,12 +28,36 @@ describe('isMobileBrowser', () => {
     ).toBe(true)
   })
 
+  it('detecta Android em modo "Site para desktop" pelo ponteiro coarse', () => {
+    expect(
+      isMobileBrowser({
+        userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120',
+        platform: 'Linux x86_64',
+        maxTouchPoints: 5,
+        coarsePointer: true,
+        screenWidth: 980,
+      })
+    ).toBe(true)
+  })
+
+  it('usa o Client Hint mobile quando disponível', () => {
+    expect(
+      isMobileBrowser({
+        userAgent: 'Mozilla/5.0 (X11; Linux x86_64) Chrome/120',
+        platform: 'Linux x86_64',
+        userAgentMobile: true,
+      })
+    ).toBe(true)
+  })
+
   it('não trata desktop como mobile', () => {
     expect(
       isMobileBrowser({
         userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120',
         platform: 'Win32',
         maxTouchPoints: 0,
+        coarsePointer: false,
+        screenWidth: 1920,
       })
     ).toBe(false)
     expect(
@@ -41,6 +65,8 @@ describe('isMobileBrowser', () => {
         userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15)',
         platform: 'MacIntel',
         maxTouchPoints: 0,
+        coarsePointer: false,
+        screenWidth: 1440,
       })
     ).toBe(false)
   })
@@ -49,6 +75,15 @@ describe('isMobileBrowser', () => {
 describe('shouldAttemptAutoplay', () => {
   it('permite autoplay no desktop enquanto não houver falha de ativação', () => {
     expect(shouldAttemptAutoplay({ mobile: false, audioUnlocked: false, needsActivation: false })).toBe(true)
+  })
+
+  it('trata o "Playback Error" genérico do SDK como autoplay no mobile', () => {
+    expect(playbackErrorMessage('Playback Error', { mobile: true })).toBe(
+      SPOTIFY_MOBILE_AUTOPLAY_MESSAGE
+    )
+    expect(playbackErrorMessage('Playback Error', { mobile: false })).not.toBe(
+      SPOTIFY_MOBILE_AUTOPLAY_MESSAGE
+    )
   })
 
   it('bloqueia autoplay no mobile até o usuário liberar o áudio', () => {

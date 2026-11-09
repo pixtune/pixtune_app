@@ -21,6 +21,7 @@ export function DashboardPage() {
     positionMs,
     durationMs,
     error: playerError,
+    errorDetail: playerErrorDetail,
     accountError,
     needsAudioActivation,
     isMobile,
@@ -97,6 +98,7 @@ export function DashboardPage() {
             isLoading={isLoading}
             isMobile={isMobile}
             error={playerError}
+            errorDetail={playerErrorDetail}
             accountError={accountError}
             needsAudioActivation={needsAudioActivation}
             onTogglePlay={togglePlay}
@@ -162,6 +164,7 @@ function NowPlayingCard({
   isLoading,
   isMobile,
   error,
+  errorDetail,
   accountError,
   needsAudioActivation,
   onTogglePlay,
@@ -179,6 +182,7 @@ function NowPlayingCard({
   isLoading: boolean
   isMobile: boolean
   error: string | null
+  errorDetail: string | null
   accountError: string | null
   needsAudioActivation: boolean
   onTogglePlay: () => void
@@ -334,10 +338,27 @@ function NowPlayingCard({
                   variant="outline"
                   size="sm"
                   className="mt-2"
-                  onClick={() => void onReconnect()}
+                  onClick={() => {
+                    // Se o player já está pronto e a falha foi no play, repetir
+                    // o play é o que o usuário espera. Erros de conexão/conta
+                    // continuam usando o reconnect.
+                    if (!accountError && playable && isReady && !isPlaying) {
+                      void onTogglePlay()
+                      return
+                    }
+                    void onReconnect()
+                  }}
                 >
                   <RefreshCw className="mr-2 h-4 w-4" /> Tentar novamente
                 </Button>
+                {errorDetail && (
+                  <details className="mt-2 text-caption text-pixtune-textMuted">
+                    <summary className="cursor-pointer select-none">Detalhes técnicos</summary>
+                    <p className="mt-1 break-words rounded bg-pixtune-bg/60 p-2 font-mono text-[11px] leading-relaxed">
+                      {errorDetail}
+                    </p>
+                  </details>
+                )}
               </div>
             )}
 
