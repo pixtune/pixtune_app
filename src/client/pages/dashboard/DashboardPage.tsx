@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { Music, Play, Pause, SkipForward, SkipBack, TrendingUp, Clock, Zap, ExternalLink, Trophy } from 'lucide-react'
+import { Music, Play, Pause, SkipForward, SkipBack, TrendingUp, Clock, Zap, ExternalLink, Trophy, AlertCircle, Loader2, RefreshCw } from 'lucide-react'
 import { Button } from '@client/components/ui/Button'
 import { Card } from '@client/components/ui/Card'
 import { Badge } from '@client/components/ui/Badge'
@@ -16,14 +16,19 @@ export function DashboardPage() {
     track: currentTrack,
     isPlaying,
     isReady,
+    isLoading,
     volume,
     positionMs,
     durationMs,
     error: playerError,
+    accountError,
+    needsAudioActivation,
+    isMobile,
     togglePlay,
     next: playNext,
     previous: playPrevious,
     setVolume,
+    reconnect,
   } = useAudioPlayer()
 
   useEffect(() => {
@@ -89,11 +94,16 @@ export function DashboardPage() {
             positionMs={positionMs}
             durationMs={durationMs}
             isReady={isReady}
+            isLoading={isLoading}
+            isMobile={isMobile}
             error={playerError}
+            accountError={accountError}
+            needsAudioActivation={needsAudioActivation}
             onTogglePlay={togglePlay}
             onPrevious={playPrevious}
             onNext={playNext}
             onVolumeChange={handleVolumeChange}
+            onReconnect={reconnect}
           />
           <QueueControlsCard onClear={handleClearQueue} />
         </div>
@@ -149,11 +159,16 @@ function NowPlayingCard({
   positionMs,
   durationMs,
   isReady,
+  isLoading,
+  isMobile,
   error,
+  accountError,
+  needsAudioActivation,
   onTogglePlay,
   onPrevious,
   onNext,
   onVolumeChange,
+  onReconnect,
 }: {
   track: any
   isPlaying: boolean
@@ -161,47 +176,59 @@ function NowPlayingCard({
   positionMs: number
   durationMs: number
   isReady: boolean
+  isLoading: boolean
+  isMobile: boolean
   error: string | null
+  accountError: string | null
+  needsAudioActivation: boolean
   onTogglePlay: () => void
   onPrevious: () => void
   onNext: () => void
   onVolumeChange: (v: number) => void
+  onReconnect: () => void | Promise<void>
 }) {
   const navigate = useNavigate()
   const totalMs = durationMs || track?.durationMs || 0
   const progress = totalMs > 0 ? Math.min(100, (positionMs / totalMs) * 100) : 0
   const playable = track?.provider === 'spotify' && Boolean(track?.providerId)
+  const visibleError = error || accountError
+  const playDisabled = !playable || !isReady || isLoading
 
   return (
-    <Card className="p-6">
-      <div className="mb-6 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+    <Card className="p-4 sm:p-6">
+      <div className="mb-4 flex flex-col gap-2 sm:mb-6 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">
           <h3 className="text-body font-semibold text-pixtune-text">Agora tocando</h3>
           <p className="text-caption text-pixtune-textSecondary">
             Reprodução oficial do Spotify no navegador. A conta precisa de Premium.
           </p>
         </div>
+        {isMobile && (
+          <span className="w-fit rounded-full border border-pixtune-border bg-pixtune-surfaceElevated px-2.5 py-1 text-caption text-pixtune-textMuted">
+            Modo celular
+          </span>
+        )}
       </div>
-      <div className="space-y-6">
+      <div className="space-y-4 sm:space-y-6">
         {track ? (
           <div className="space-y-4">
-            <div className="flex items-center gap-4">
-              <div className="w-24 h-24 rounded-xl bg-pixtune-surfaceElevated border border-pixtune-border flex-shrink-0 relative overflow-hidden">
+            <div className="flex items-center gap-3 sm:gap-4">
+              <div className="h-20 w-20 flex-shrink-0 overflow-hidden rounded-xl border border-pixtune-border bg-pixtune-surfaceElevated relative sm:h-24 sm:w-24">
                 {track.artworkUrl ? (
                   <img src={track.artworkUrl} alt={track.title} className="w-full h-full object-cover" />
                 ) : (
                   <div className="w-full h-full flex items-center justify-center text-pixtune-textMuted">
-                    <Music className="w-10 h-10" />
+                    <Music className="w-8 h-8 sm:w-10 sm:h-10" />
                   </div>
                 )}
               </div>
               <div className="flex-1 min-w-0">
-                <p className="text-heading-sm font-bold text-pixtune-text truncate">{track.title}</p>
-                <p className="text-body-sm text-pixtune-textSecondary truncate">{track.artist || 'Artista desconhecido'}</p>
+                <p className="truncate text-body font-bold text-pixtune-text sm:text-heading-sm">{track.title}</p>
+                <p className="truncate text-body-sm text-pixtune-textSecondary">{track.artist || 'Artista desconhecido'}</p>
                 {track.album && (
-                  <p className="text-caption text-pixtune-textMuted truncate">{track.album}</p>
+                  <p className="truncate text-caption text-pixtune-textMuted">{track.album}</p>
                 )}
-                <div className="flex items-center gap-2 mt-1 flex-wrap">
+                <div className="mt-1 flex flex-wrap items-center gap-2">
                   <Badge variant={track.provider === 'spotify' ? 'info' : 'default'}>{track.provider === 'spotify' ? 'Spotify' : track.provider}</Badge>
                   {track.amountCents > 0 && (
                     <Badge variant="success">
@@ -222,7 +249,7 @@ function NowPlayingCard({
                   )}
                 </div>
               </div>
-              <div className="text-right hidden sm:block">
+              <div className="hidden text-right sm:block">
                 <p className="text-body font-mono text-pixtune-text">{totalMs ? formatDuration(totalMs) : '--:--'}</p>
               </div>
             </div>
@@ -244,8 +271,8 @@ function NowPlayingCard({
               </div>
             </div>
 
-            <div className="flex items-center gap-3">
-              <Button variant="ghost" size="icon" onClick={onPrevious} aria-label="Música anterior">
+            <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+              <Button variant="ghost" size="icon" className="h-11 w-11" onClick={onPrevious} aria-label="Música anterior">
                 <SkipBack className="w-5 h-5" />
               </Button>
               <Button
@@ -253,17 +280,23 @@ function NowPlayingCard({
                 size="lg"
                 className="w-14 h-14 rounded-full"
                 onClick={onTogglePlay}
-                disabled={!playable || !isReady}
+                disabled={playDisabled}
                 aria-label={isPlaying ? 'Pausar áudio' : 'Tocar áudio'}
               >
-                {isPlaying ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5" />}
+                {isLoading ? (
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                ) : isPlaying ? (
+                  <Pause className="w-5 h-5" />
+                ) : (
+                  <Play className="w-5 h-5" />
+                )}
               </Button>
-              <Button variant="ghost" size="icon" onClick={onNext} aria-label="Próxima música">
+              <Button variant="ghost" size="icon" className="h-11 w-11" onClick={onNext} aria-label="Próxima música">
                 <SkipForward className="w-5 h-5" />
               </Button>
-              {!isReady && (
-                <span className="text-caption text-pixtune-textMuted">
-                  {error ? 'Player indisponível' : 'Carregando player do Spotify...'}
+              {!isReady && !visibleError && (
+                <span className="flex items-center gap-2 text-caption text-pixtune-textMuted">
+                  <Loader2 className="h-4 w-4 animate-spin" /> Conectando player do Spotify...
                 </span>
               )}
             </div>
@@ -276,20 +309,41 @@ function NowPlayingCard({
                 max="100"
                 value={volume}
                 onChange={(e) => onVolumeChange(parseInt(e.target.value))}
-                className="w-24 h-2 bg-pixtune-border rounded-lg appearance-none cursor-pointer accent-pixtune-primary"
+                className="h-2 min-w-0 flex-1 cursor-pointer appearance-none rounded-lg bg-pixtune-border accent-pixtune-primary sm:max-w-[12rem]"
                 aria-label="Volume do player"
               />
               <span className="text-caption text-pixtune-textMuted font-mono">{volume}%</span>
             </div>
 
+            {needsAudioActivation && !isPlaying && (
+              <p className="flex items-start gap-2 rounded-lg border border-pixtune-warning/40 bg-pixtune-warning/10 p-3 text-caption text-pixtune-warning" role="status">
+                <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" />
+                <span>
+                  O navegador bloqueou o áudio. Toque no botão <strong>Play</strong> para liberar o som neste dispositivo.
+                </span>
+              </p>
+            )}
+
+            {visibleError && (
+              <div className="rounded-lg border border-pixtune-danger/40 bg-pixtune-danger/10 p-3" role="alert">
+                <p className="flex items-start gap-2 text-caption text-pixtune-danger">
+                  <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" />
+                  <span>{visibleError}</span>
+                </p>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="mt-2"
+                  onClick={() => void onReconnect()}
+                >
+                  <RefreshCw className="mr-2 h-4 w-4" /> Tentar novamente
+                </Button>
+              </div>
+            )}
+
             {!playable && (
               <p className="text-caption text-pixtune-warning" role="status">
                 Este item não tem uma faixa do Spotify. Abra a fila e adicione um link para poder ouvir.
-              </p>
-            )}
-            {error && (
-              <p className="text-caption text-pixtune-danger" role="alert">
-                {error}
               </p>
             )}
           </div>

@@ -35,7 +35,17 @@ export function QueuePage() {
   const [adding, setAdding] = useState(false)
   const [addError, setAddError] = useState<string | null>(null)
 
-  const { track: currentTrack, isPlaying, playTrack, togglePlay, next, refresh, error: playerError } = useAudioPlayer()
+  const {
+    track: currentTrack,
+    isPlaying,
+    playTrack,
+    togglePlay,
+    next,
+    refresh,
+    error: playerError,
+    accountError,
+    needsAudioActivation,
+  } = useAudioPlayer()
 
   useEffect(() => {
     loadQueue()
@@ -140,7 +150,9 @@ export function QueuePage() {
   }
 
   async function handlePlay(track: QueueItem) {
-    if (currentTrack?.id === track.id && isPlaying) {
+    // Para a faixa atual, usar togglePlay preserva a posição ao retomar e
+    // também libera o áudio no primeiro toque do celular.
+    if (currentTrack?.id === track.id) {
       await togglePlay()
     } else {
       await playTrack(track)
@@ -331,10 +343,19 @@ export function QueuePage() {
         )}
       </Card>
 
-      {playerError && (
+      {(playerError || accountError) && (
         <div className="flex items-start gap-2 p-4 rounded-lg border border-pixtune-danger/40 bg-pixtune-danger/10 text-body-sm text-pixtune-danger" role="alert">
           <AlertCircle className="w-5 h-5 flex-shrink-0" />
-          <span>{playerError}</span>
+          <span>{playerError || accountError}</span>
+        </div>
+      )}
+
+      {needsAudioActivation && !isPlaying && (
+        <div className="flex items-start gap-2 p-4 rounded-lg border border-pixtune-warning/40 bg-pixtune-warning/10 text-body-sm text-pixtune-warning" role="status">
+          <AlertCircle className="w-5 h-5 flex-shrink-0" />
+          <span>
+            O navegador bloqueou o áudio. Toque no botão <strong>Play</strong> de uma música para liberar o som neste dispositivo.
+          </span>
         </div>
       )}
 

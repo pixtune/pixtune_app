@@ -59,13 +59,15 @@ export function getSpotifyConfig(): SpotifyConfig | null {
     process.env.SPOTIFY_REDIRECT_URI,
     `${appUrl}/api/auth/spotify/callback`,
     'SPOTIFY_REDIRECT_URI',
-    appUrl
+    appUrl,
+    '/api/auth/spotify/callback'
   )
   const connectRedirectUri = resolveCallbackUri(
     process.env.SPOTIFY_CONNECT_REDIRECT_URI,
     `${appUrl}/api/spotify/callback`,
     'SPOTIFY_CONNECT_REDIRECT_URI',
-    appUrl
+    appUrl,
+    '/api/spotify/callback'
   )
 
   return { clientId, clientSecret, apiUrl, appUrl, redirectUri, connectRedirectUri }
@@ -88,7 +90,8 @@ function resolveCallbackUri(
   configured: string | undefined,
   fallback: string,
   envName: string,
-  appUrl: string
+  appUrl: string,
+  expectedPath: string
 ): string {
   const value = (configured || '').trim()
   if (!value) return fallback
@@ -113,6 +116,20 @@ function resolveCallbackUri(
       logEvent('error', 'spotify.redirect_uri_insecure', {
         env: envName,
         using: fallback,
+      })
+      return fallback
+    }
+
+    // O hostname igual não basta: login (auth) e conexão (connect) usam
+    // callbacks diferentes. Se a env apontar para o caminho errado, o Spotify
+    // entrega o código no endpoint errado e o cookie/escopo não bate.
+    if (uri.pathname !== expectedPath) {
+      logEvent('error', 'spotify.redirect_uri_path_mismatch', {
+        env: envName,
+        configuredPath: uri.pathname,
+        expectedPath,
+        using: fallback,
+        hint: `Cadastre e use exatamente ${expectedPath} para esta env.`,
       })
       return fallback
     }

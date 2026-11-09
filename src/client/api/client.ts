@@ -540,10 +540,15 @@ export const apiSpotify = {
     }),
 
   token: (force = false) =>
-    request<{ accessToken: string; expiresAt: string | null }>('/api/spotify/token', {
-      method: 'POST',
-      body: JSON.stringify({ force }),
-    }),
+    request<{ accessToken: string; expiresAt: string | null }>(
+      // `force=1` na query é o contrato que o backend sempre leu. O corpo
+      // continua sendo enviado para compatibilidade com versões antigas da API.
+      `/api/spotify/token${force ? '?force=1' : ''}`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ force }),
+      }
+    ),
 
   refresh: () =>
     request<{ profile: SpotifyProfile }>('/api/spotify/refresh', { method: 'POST' }),

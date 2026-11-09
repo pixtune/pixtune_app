@@ -371,7 +371,11 @@ spotify.get('/callback', async (c) => {
 
 spotify.post('/token', authMiddleware, async (c) => {
   const userId = getUserId(c)
-  const forceRefresh = c.req.query('force') === '1'
+  // O cliente envia `force` na query e no corpo. Ler os dois formatos evita
+  // que uma versão antiga (somente corpo) ou um proxy que remove a query
+  // deixe de renovar o token quando o Spotify responde 401.
+  const body = (await c.req.json().catch(() => ({}))) as { force?: unknown }
+  const forceRefresh = c.req.query('force') === '1' || body?.force === true
   try {
     const accessToken = await getSpotifyAccessToken(userId, fetch, { forceRefresh })
     const integration = await prisma.integration.findUnique({

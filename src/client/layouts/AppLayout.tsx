@@ -205,17 +205,22 @@ const CONNECTION_STATES: Record<
 
 function ConnectionIndicators() {
   const { livepixStatus } = useConnectionStatus()
-  const { isReady, error } = useAudioPlayer()
+  const { isReady, error, accountError, needsAudioActivation } = useAudioPlayer()
   const needsSpotifyConnection = Boolean(
     error && /conecte sua conta|não configurado no servidor/i.test(error)
   )
-  const musicStatus: ConnectionState = error
+  const playerError = accountError || error
+  const musicStatus: ConnectionState = playerError
     ? needsSpotifyConnection
       ? 'disconnected'
       : 'error'
     : isReady
       ? 'connected'
       : 'connecting'
+  const playerDetail =
+    accountError ||
+    error ||
+    (needsAudioActivation ? 'Toque em Play para liberar o áudio neste dispositivo' : undefined)
 
   return (
     <div
@@ -227,7 +232,7 @@ function ConnectionIndicators() {
       <ConnectionIndicator
         service="Player"
         status={musicStatus}
-        detail={error ?? undefined}
+        detail={playerDetail}
       />
     </div>
   )

@@ -9,6 +9,20 @@ import {
 } from 'react'
 import { apiMusic, apiQueue, apiSpotify, type MusicTrack } from '@client/api/client'
 import { spotifyTrackUri } from '@shared/spotify'
+import {
+  isAutoplayBlockedReason,
+  isDeviceReason,
+  isMobileBrowser,
+  isPremiumReason,
+  nextReconnectDelay,
+  playbackErrorMessage,
+  shouldAttemptAutoplay,
+  SPOTIFY_AUTH_MESSAGE,
+  SPOTIFY_DEVICE_MESSAGE,
+  SPOTIFY_GENERIC_MESSAGE,
+  SPOTIFY_NETWORK_MESSAGE,
+  SPOTIFY_PREMIUM_MESSAGE,
+} from './playbackPolicy'
 
 /**
  * Player oficial do Spotify usando o Web Playback SDK.
@@ -16,6 +30,16 @@ import { spotifyTrackUri } from '@shared/spotify'
  * O SDK cria um dispositivo Spotify Connect no navegador e entrega somente
  * áudio. O PixTune não baixa, extrai nem contorna a reprodução: o Spotify
  * continua sendo quem entrega o stream.
+ *
+ * Regras importantes para mobile (Chrome Android / Safari iOS):
+ * - O navegador só libera áudio depois de um gesto do usuário. Por isso
+ *   `activateElement()` é chamado de forma síncrona no clique de Play/Pular e,
+ *   também, no primeiro toque em qualquer lugar da página.
+ * - Autoplay, avanço automático de faixa e retomada após recarregar a página
+ *   NÃO tentam tocar sozinhos no celular. A interface mostra "toque em Play"
+ *   em vez de repetir um erro de reprodução a cada polling.
+ * - O token do SDK é renovado de verdade (`force`) quando o Spotify responde
+ *   401, evitando repetir um token já recusado.
  */
 
 interface SpotifyWebTrack {
@@ -64,6 +88,15 @@ declare global {
   }
 }
 
+function runtimeIsMobile(): boolean {
+  if (typeof navigator === 'undefined') return false
+  return isMobileBrowser({
+    userAgent: navigator.userAgent,
+    platform: navigator.platform,
+    maxTouchPoints: navigator.maxTouchPoints,
+  })
+}
+
 let sdkPromise: Promise<SpotifyNamespace> | null = null
 
 function loadSpotifySdk(): Promise<SpotifyNamespace> {
@@ -71,32 +104,67 @@ function loadSpotifySdk(): Promise<SpotifyNamespace> {
   if (sdkPromise) return sdkPromise
 
   sdkPromise = new Promise<SpotifyNamespace>((resolve, reject) => {
+    let settled = false
+    let script: HTMLScriptElement | null = null
+    let interval: number | null = null
+
+    const stopPolling = () => {
+      if (interval !== null) {
+        window.clearInterval(interval)
+        interval = null
+      }
+    }
+
+    const succeed = () => {
+      const spotify = window.Spotify
+      if (settled || !spotify?.Player) return
+      settled = true
+      stopPolling()
+      resolve(spotify)
+    }
+
+    const fail = (message: string) => {
+      if (settled) return
+      settled = true
+      stopPolling()
+      // Remove o <script> que falhou para uma nova tentativa poder recarregar.
+      script?.remove()
+      reject(new Error(message))
+    }
+
     const previousCallback = window.onSpotifyWebPlaybackSDKReady
     window.onSpotifyWebPlaybackSDKReady = () => {
       previousCallback?.()
-      if (window.Spotify?.Player) resolve(window.Spotify)
+      succeed()
     }
 
     const existing = document.querySelector<HTMLScriptElement>(
       'script[data-pixtune-spotify-sdk]'
     )
-    if (!existing) {
-      const script = document.createElement('script')
+    if (existing) {
+      existing.addEventListener('error', () =>
+        fail('Não foi possível carregar o player do Spotify.')
+      )
+    } else {
+      script = document.createElement('script')
       script.src = 'https://sdk.scdn.co/spotify-player.js'
       script.async = true
       script.dataset.pixtuneSpotifySdk = 'true'
-      script.onerror = () => reject(new Error('Não foi possível carregar o player do Spotify'))
+      script.onerror = () =>
+        fail(
+          'Não foi possível carregar o player do Spotify. Verifique bloqueadores de conteúdo e tente novamente.'
+        )
       document.head.appendChild(script)
     }
 
     const startedAt = Date.now()
-    const check = window.setInterval(() => {
+    interval = window.setInterval(() => {
       if (window.Spotify?.Player) {
-        window.clearInterval(check)
-        resolve(window.Spotify)
-      } else if (Date.now() - startedAt > 15000) {
-        window.clearInterval(check)
-        reject(new Error('Tempo esgotado ao carregar o player do Spotify'))
+        succeed()
+        return
+      }
+      if (Date.now() - startedAt > 15_000) {
+        fail('Tempo esgotado ao carregar o player do Spotify. Verifique sua conexão.')
       }
     }, 250)
   }).catch((error) => {
@@ -107,6 +175,19 @@ function loadSpotifySdk(): Promise<SpotifyNamespace> {
   return sdkPromise
 }
 
+/**
+ * Erro já traduzido para o usuário. O caller não deve traduzir de novo.
+ */
+class PlaybackError extends Error {
+  constructor(
+    message: string,
+    readonly needsActivation = false
+  ) {
+    super(message)
+    this.name = 'PlaybackError'
+  }
+}
+
 let tokenCache: { token: string; expiresAt: number } | null = null
 
 async function fetchSpotifyToken(force = false): Promise<string> {
@@ -114,9 +195,11 @@ async function fetchSpotifyToken(force = false): Promise<string> {
     return tokenCache.token
   }
 
-  const response = await apiSpotify.token()
+  const response = await apiSpotify.token(force)
   if (!response.success || !response.data?.accessToken) {
-    throw new Error(response.error?.message || 'Conecte sua conta do Spotify nas configurações.')
+    throw new Error(
+      response.error?.message || 'Conecte sua conta do Spotify nas configurações.'
+    )
   }
 
   const expiresAt = response.data.expiresAt
@@ -132,35 +215,81 @@ async function spotifyApiFetch(
   retry = true
 ): Promise<Response> {
   const token = await fetchSpotifyToken()
-  const response = await fetch(`https://api.spotify.com/v1${path}`, {
-    ...init,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      ...(init.headers || {}),
-    },
-  })
+  let response: Response
+
+  try {
+    response = await fetch(`https://api.spotify.com/v1${path}`, {
+      ...init,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        ...(init.headers || {}),
+      },
+    })
+  } catch {
+    throw new PlaybackError(SPOTIFY_NETWORK_MESSAGE)
+  }
 
   if (response.status === 401 && retry) {
+    // O Spotify recusou o token mesmo antes do vencimento local. Precisamos
+    // pedir ao backend um token novo de verdade; sem `force` ele devolveria o
+    // mesmo token em cache e a reprodução continuaria falhando.
     tokenCache = null
+    await fetchSpotifyToken(true)
     return spotifyApiFetch(path, init, false)
   }
 
   return response
 }
 
-async function transferPlayback(deviceId: string): Promise<void> {
+interface SpotifyApiErrorBody {
+  error?: {
+    status?: number
+    message?: string
+    reason?: string
+  }
+}
+
+async function readSpotifyError(
+  response: Response
+): Promise<{ message: string; reason: string }> {
+  const body = (await response.json().catch(() => ({}))) as SpotifyApiErrorBody
+  return {
+    message: body?.error?.message || '',
+    reason: body?.error?.reason || '',
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms))
+}
+
+async function transferPlayback(deviceId: string, mobile: boolean): Promise<void> {
   const response = await spotifyApiFetch('/me/player', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ device_ids: [deviceId], play: false }),
   })
 
-  if (!response.ok && response.status !== 204 && response.status !== 404) {
-    throw new Error('Não foi possível ativar o dispositivo PixTune no Spotify.')
-  }
+  if (response.ok || response.status === 204 || response.status === 404) return
+
+  const { message, reason } = await readSpotifyError(response)
+  throw new PlaybackError(
+    playbackErrorMessage([message, reason].filter(Boolean).join(' — '), { mobile })
+  )
 }
 
-async function playSpotifyUri(deviceId: string, uri: string): Promise<void> {
+/**
+ * Inicia uma faixa no dispositivo PixTune.
+ *
+ * Em mobile o dispositivo pode demorar alguns instantes para aparecer no
+ * Spotify Connect. Em vez de falhar no primeiro 404, tentamos transferir e
+ * repetir o play algumas vezes. Erros de Premium/restrição não são repetidos.
+ */
+async function playSpotifyUri(
+  deviceId: string,
+  uri: string,
+  mobile: boolean
+): Promise<void> {
   const request = () =>
     spotifyApiFetch(`/me/player/play?device_id=${encodeURIComponent(deviceId)}`, {
       method: 'PUT',
@@ -168,25 +297,81 @@ async function playSpotifyUri(deviceId: string, uri: string): Promise<void> {
       body: JSON.stringify({ uris: [uri] }),
     })
 
-  let response = await request()
+  let lastMessage = ''
+  let lastStatus = 0
 
-  if (response.status === 404) {
-    await transferPlayback(deviceId)
-    response = await request()
-  }
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const response = await request()
+    if (response.ok || response.status === 204) return
 
-  if (response.status === 403) {
-    throw new Error(
-      'O Spotify recusou a reprodução. Verifique se a conta tem Spotify Premium e se o app está autorizado.'
-    )
-  }
+    lastStatus = response.status
+    const { message, reason } = await readSpotifyError(response)
+    lastMessage = [message, reason].filter(Boolean).join(' — ')
 
-  if (!response.ok && response.status !== 204) {
-    const body = (await response.json().catch(() => ({}))) as {
-      error?: { message?: string }
+    if (response.status === 401) {
+      throw new PlaybackError(SPOTIFY_AUTH_MESSAGE)
     }
-    throw new Error(body.error?.message || `Spotify respondeu ${response.status}`)
+    if (response.status === 429) {
+      throw new PlaybackError(playbackErrorMessage('rate limit', { mobile }))
+    }
+    if (response.status === 403) {
+      if (isPremiumReason(lastMessage)) {
+        throw new PlaybackError(SPOTIFY_PREMIUM_MESSAGE)
+      }
+      // Só vale a pena repetir quando o problema é o dispositivo ainda não
+      // registrado. Autoplay, restrição e erros desconhecidos não melhoram.
+      if (!isDeviceReason(lastMessage) && lastMessage) {
+        throw new PlaybackError(
+          playbackErrorMessage(lastMessage, { mobile }),
+          isAutoplayBlockedReason(lastMessage)
+        )
+      }
+    }
+
+    if (attempt < 3) {
+      if (attempt === 0) {
+        await transferPlayback(deviceId, mobile).catch(() => {
+          // O dispositivo pode ainda não estar disponível. O retry abaixo
+          // tenta novamente; o erro final mostra a orientação correta.
+        })
+      }
+      await sleep(400 * (attempt + 1))
+    }
   }
+
+  const fallback =
+    lastStatus === 404 || lastStatus === 403 || isDeviceReason(lastMessage)
+      ? 'device not found'
+      : 'playback failed'
+  throw new PlaybackError(playbackErrorMessage(lastMessage || fallback, { mobile }))
+}
+
+function toPlaybackErrorInfo(
+  error: unknown,
+  mobile: boolean
+): { message: string; needsActivation: boolean } {
+  if (error instanceof PlaybackError) {
+    return { message: error.message, needsActivation: error.needsActivation }
+  }
+
+  const raw = error instanceof Error ? error.message : ''
+  if (!raw) return { message: SPOTIFY_GENERIC_MESSAGE, needsActivation: false }
+
+  if (/conecte sua conta|sessão do spotify|reconecte a conta/i.test(raw)) {
+    return { message: SPOTIFY_AUTH_MESSAGE, needsActivation: false }
+  }
+
+  // Mensagens da nossa API já estão em português e são mais específicas
+  // (ex.: "Aguarde a vez: a maior doação toca primeiro").
+  if (/[ãáâàéêíóôõúç]/i.test(raw) || /não|toque|verifique|aguarde|player|spotify/i.test(raw)) {
+    return { message: raw, needsActivation: false }
+  }
+
+  if (isAutoplayBlockedReason(raw)) {
+    return { message: playbackErrorMessage(raw, { mobile }), needsActivation: true }
+  }
+
+  return { message: playbackErrorMessage(raw, { mobile }), needsActivation: false }
 }
 
 interface AudioPlayerContextValue {
@@ -198,12 +383,20 @@ interface AudioPlayerContextValue {
   positionMs: number
   durationMs: number
   error: string | null
+  /** Problema de conta (ex.: Spotify sem Premium), separado de erros de reprodução. */
+  accountError: string | null
+  /** O navegador bloqueou o áudio e o usuário precisa tocar em Play. */
+  needsAudioActivation: boolean
+  /** O navegador atual é móvel. */
+  isMobile: boolean
   playTrack: (track: MusicTrack) => Promise<void>
   togglePlay: () => Promise<void>
   next: () => Promise<void>
   previous: () => Promise<void>
   setVolume: (volume: number) => void
   refresh: () => Promise<void>
+  /** Recria/reconecta o player e tenta buscar o status novamente. */
+  reconnect: () => Promise<void>
 }
 
 const AudioPlayerContext = createContext<AudioPlayerContextValue | null>(null)
@@ -217,22 +410,49 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
   const [positionMs, setPositionMs] = useState(0)
   const [durationMs, setDurationMs] = useState(0)
   const [error, setError] = useState<string | null>(null)
+  const [accountError, setAccountError] = useState<string | null>(null)
+  const [needsAudioActivation, setNeedsAudioActivationState] = useState(false)
   const [spotifyConnected, setSpotifyConnected] = useState<boolean | null>(null)
+  const [statusReloadToken, setStatusReloadToken] = useState(0)
+  const [sdkReloadToken, setSdkReloadToken] = useState(0)
+
+  const [isMobile] = useState(() => runtimeIsMobile())
 
   const playerRef = useRef<SpotifyPlayer | null>(null)
   const deviceIdRef = useRef<string | null>(null)
   const trackRef = useRef<MusicTrack | null>(null)
+  const loadedTrackRef = useRef<MusicTrack | null>(null)
   const isPlayingRef = useRef(false)
   const volumeRef = useRef(70)
   const loadedUriRef = useRef<string | null>(null)
   const endedUriRef = useRef<string | null>(null)
+  const lastPositionRef = useRef(0)
+  const lastDurationRef = useRef(0)
   const syncInFlightRef = useRef(false)
   const autoPlayInFlightRef = useRef(false)
   const lastAutoPlayAttemptRef = useRef(0)
   const volumeChangedAtRef = useRef(0)
   const volumeDebounceRef = useRef<number | null>(null)
   const refreshRef = useRef<() => Promise<void>>(async () => {})
-  const handleEndedRef = useRef<() => Promise<void>>(async () => {})
+  const handleEndedRef = useRef<(trackId?: string) => Promise<void>>(async () => {})
+  const isMobileRef = useRef(isMobile)
+
+  const audioUnlockedRef = useRef(false)
+  const needsActivationRef = useRef(false)
+  const activationPromiseRef = useRef<Promise<boolean> | null>(null)
+  const loadSeqRef = useRef(0)
+  const endedInFlightRef = useRef(false)
+  const startingUriRef = useRef<string | null>(null)
+  const startingPromiseRef = useRef<Promise<void> | null>(null)
+  /** URI que o SDK realmente começou a tocar (para diferenciar resume de play). */
+  const startedUriRef = useRef<string | null>(null)
+  /** Última vez que o usuário pediu play; evita pausar o servidor durante o clique. */
+  const lastUserPlayAtRef = useRef(0)
+
+  const connectingRef = useRef(false)
+  const connectAttemptRef = useRef(0)
+  const reconnectTimerRef = useRef<number | null>(null)
+  const scheduleReconnectRef = useRef<() => void>(() => {})
 
   const updateTrack = useCallback((next: MusicTrack | null) => {
     trackRef.current = next
@@ -249,25 +469,132 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
     setVolume(next)
   }, [])
 
+  const setNeedsAudioActivation = useCallback((value: boolean) => {
+    needsActivationRef.current = value
+    setNeedsAudioActivationState(value)
+  }, [])
+
+  const markAudioUnlocked = useCallback(() => {
+    audioUnlockedRef.current = true
+    needsActivationRef.current = false
+    setNeedsAudioActivationState(false)
+  }, [])
+
+  /**
+   * Libera o elemento de áudio do SDK. Precisa ser chamado dentro de um gesto
+   * do usuário (clique/toque); por isso nunca é chamado pelo polling.
+   */
+  const activateAudio = useCallback((): Promise<boolean> => {
+    if (audioUnlockedRef.current) return Promise.resolve(true)
+
+    const existing = activationPromiseRef.current
+    if (existing) return existing
+
+    const player = playerRef.current
+    if (!player?.activateElement) return Promise.resolve(false)
+
+    let promise: Promise<boolean>
+    promise = player
+      .activateElement()
+      .then(() => {
+        markAudioUnlocked()
+        return true
+      })
+      .catch(() => false)
+      .finally(() => {
+        if (activationPromiseRef.current === promise) {
+          activationPromiseRef.current = null
+        }
+      })
+
+    activationPromiseRef.current = promise
+    return promise
+  }, [markAudioUnlocked])
+
+  const canAutoPlayNow = useCallback(
+    () =>
+      shouldAttemptAutoplay({
+        mobile: isMobileRef.current,
+        audioUnlocked: audioUnlockedRef.current,
+        needsActivation: needsActivationRef.current,
+      }),
+    []
+  )
+
+  /**
+   * Alinha o estado do servidor quando o navegador não pode iniciar o áudio.
+   * Não pausa se o usuário acabou de pedir play: o `play()` dele pode estar
+   * em andamento e um pause atrasado interromperia a reprodução recém-iniciada.
+   */
+  const pauseServerForActivation = useCallback(() => {
+    if (Date.now() - lastUserPlayAtRef.current < 10_000) return
+    void apiMusic.pause().catch(() => {})
+  }, [])
+
   const startSpotifyUri = useCallback(async (uri: string) => {
     const player = playerRef.current
     const deviceId = deviceIdRef.current
     if (!player || !deviceId) {
-      throw new Error('Player do Spotify ainda não está pronto. Aguarde alguns segundos.')
+      throw new PlaybackError(SPOTIFY_DEVICE_MESSAGE)
     }
 
-    await player.activateElement().catch(() => {
-      // Em desktop o SDK costuma tocar sem esse gesto; em mobile ele é
-      // necessário e será cobrado no primeiro clique do usuário.
-    })
-    await playSpotifyUri(deviceId, uri)
+    // Espera a ativação disparada pelo clique, mas não tenta criar uma nova
+    // ativação fora de um gesto (isso seria bloqueado no mobile).
+    const pendingActivation = activationPromiseRef.current
+    if (pendingActivation) await pendingActivation.catch(() => false)
+
+    await playSpotifyUri(deviceId, uri, isMobileRef.current)
   }, [])
+
+  /**
+   * Evita dois `PUT /me/player/play` simultâneos para a mesma faixa.
+   *
+   * O polling de 4s e o avanço automático podiam iniciar a mesma faixa em
+   * paralelo, gerando 404/erros repetidos no mobile enquanto o dispositivo
+   * ainda estava sendo registrado. Chamadas para a mesma URI reaproveitam a
+   * promessa em andamento; uma URI nova substitui a anterior.
+   */
+  const startUri = useCallback(
+    (uri: string): Promise<void> => {
+      if (startingUriRef.current === uri && startingPromiseRef.current) {
+        return startingPromiseRef.current
+      }
+
+      let promise: Promise<void>
+      promise = startSpotifyUri(uri).finally(() => {
+        if (startingPromiseRef.current === promise) {
+          startingPromiseRef.current = null
+          startingUriRef.current = null
+        }
+      })
+
+      startingUriRef.current = uri
+      startingPromiseRef.current = promise
+      return promise
+    },
+    [startSpotifyUri]
+  )
 
   const applyTrack = useCallback(
     (nextTrack: MusicTrack | null, autoplay: boolean) => {
+      const seq = ++loadSeqRef.current
+
       if (!nextTrack) {
+        loadedTrackRef.current = null
         loadedUriRef.current = null
         endedUriRef.current = null
+        startedUriRef.current = null
+        lastPositionRef.current = 0
+        lastDurationRef.current = 0
+        setError((current) => {
+          if (!current) return null
+          return /conecte sua conta|não configurado no servidor|não foi possível verificar|sessão do spotify/i.test(
+            current
+          )
+            ? current
+            : null
+        })
+        setNeedsAudioActivation(false)
         void playerRef.current?.pause().catch(() => {})
         updatePlaying(false)
         updateTrack(null)
@@ -279,36 +606,85 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
 
       if (nextTrack.provider !== 'spotify' || !nextTrack.providerId) {
         setError('Esta faixa não está disponível no Spotify.')
+        void playerRef.current?.pause().catch(() => {})
         updatePlaying(false)
+        setIsLoading(false)
+        loadedTrackRef.current = null
         loadedUriRef.current = null
+        endedUriRef.current = null
+        startedUriRef.current = null
         return
       }
 
       const uri = spotifyTrackUri(nextTrack.providerId)
       const changed = loadedUriRef.current !== uri
 
-      setError(null)
+      // Limpa erros de reprodução, mas preserva avisos de conta/configuração:
+      // o polling da fila não deve apagar a mensagem de reconexão do Spotify.
+      setError((current) => {
+        if (!current) return null
+        return /conecte sua conta|não configurado no servidor|não foi possível verificar|sessão do spotify/i.test(
+          current
+        )
+          ? current
+          : null
+      })
       updateTrack(nextTrack)
       setDurationMs(nextTrack.durationMs ?? 0)
 
+      if (changed) {
+        endedUriRef.current = null
+        startedUriRef.current = null
+        lastPositionRef.current = 0
+        lastDurationRef.current = nextTrack.durationMs ?? 0
+      }
+
       if (autoplay) {
         if (!changed && isPlayingRef.current) return
+
+        loadedTrackRef.current = nextTrack
         loadedUriRef.current = uri
         endedUriRef.current = null
+
+        if (!deviceIdRef.current) {
+          // O dispositivo ainda não ficou pronto. Não trate como erro: o
+          // evento `ready` chama o refresh e decide se pode tocar.
+          updatePlaying(false)
+          setIsLoading(false)
+          return
+        }
+
+        if (!canAutoPlayNow()) {
+          updatePlaying(false)
+          setIsLoading(false)
+          setNeedsAudioActivation(true)
+          return
+        }
+
         setIsLoading(true)
-        void startSpotifyUri(uri)
+        void startUri(uri)
           .then(() => {
+            if (loadSeqRef.current !== seq) return
+            startedUriRef.current = uri
             setIsLoading(false)
             updatePlaying(true)
+            setNeedsAudioActivation(false)
           })
           .catch((err) => {
+            if (loadSeqRef.current !== seq) return
+            const info = toPlaybackErrorInfo(err, isMobileRef.current)
             setIsLoading(false)
             updatePlaying(false)
-            setError(err instanceof Error ? err.message : 'Não foi possível tocar no Spotify.')
+            if (info.needsActivation) setNeedsAudioActivation(true)
+            setError(info.message)
+            if (err instanceof Error) {
+              console.warn('[PixTune] Spotify playback start failed:', err.message)
+            }
           })
         return
       }
 
+      loadedTrackRef.current = nextTrack
       loadedUriRef.current = uri
       if (isPlayingRef.current) {
         void playerRef.current?.pause().catch(() => {})
@@ -316,83 +692,204 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
       updatePlaying(false)
       setIsLoading(false)
     },
-    [startSpotifyUri, updatePlaying, updateTrack]
+    [canAutoPlayNow, setNeedsAudioActivation, startUri, updatePlaying, updateTrack]
   )
 
-  const handleEnded = useCallback(async () => {
-    try {
-      const response = await apiMusic.ended()
-      const next = response.data?.track ?? null
-      if (next) {
-        applyTrack(next, true)
-      } else {
-        applyTrack(null, false)
+  const handleEnded = useCallback(
+    async (finishedTrackId?: string) => {
+      if (endedInFlightRef.current) return
+      endedInFlightRef.current = true
+
+      try {
+        const response = await apiMusic.ended(finishedTrackId)
+        const next = response.data?.track ?? null
+
+        if (!next) {
+          applyTrack(null, false)
+          return
+        }
+
+        const canAuto = canAutoPlayNow()
+        applyTrack(next, canAuto)
+        if (!canAuto) {
+          // A próxima faixa já foi promovida para `playing` no servidor; como
+          // este navegador precisa de um gesto, marcamos como pausada até o
+          // usuário tocar em Play.
+          pauseServerForActivation()
+          setNeedsAudioActivation(true)
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Erro ao avançar a fila.')
+        updatePlaying(false)
+      } finally {
+        endedInFlightRef.current = false
       }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Erro ao avançar a fila')
-      updatePlaying(false)
-    }
-  }, [applyTrack, updatePlaying])
+    },
+    [applyTrack, canAutoPlayNow, pauseServerForActivation, setNeedsAudioActivation, updatePlaying]
+  )
 
   useEffect(() => {
     handleEndedRef.current = handleEnded
   }, [handleEnded])
 
+  /**
+   * Detecta o fim da faixa comparando a URI que o SDK está tocando com a URI
+   * que nós carregamos. Sem isso, um estado atrasado de uma faixa anterior
+   * podia encerrar a faixa seguinte.
+   */
   const maybeFinish = useCallback((state: SpotifyPlaybackState | null) => {
     if (!state || !state.duration) return
 
     const currentUri = loadedUriRef.current
     if (!currentUri) return
-    if (state.position < state.duration - 1000) return
+
+    const stateUri = state.track_window?.current_track?.uri
+    if (stateUri && stateUri !== currentUri) return
+
+    const position = state.position
+    const duration = state.duration
+    const nearEnd = position >= duration - 1000
+    const resetAtEnd =
+      state.paused &&
+      position === 0 &&
+      lastDurationRef.current > 0 &&
+      lastPositionRef.current >= lastDurationRef.current - 1500
+
+    if (!nearEnd && !resetAtEnd) {
+      lastPositionRef.current = position
+      lastDurationRef.current = duration
+      return
+    }
+
     if (endedUriRef.current === currentUri) return
 
     endedUriRef.current = currentUri
-    void handleEndedRef.current()
+    lastPositionRef.current = position
+    lastDurationRef.current = duration
+    void handleEndedRef.current(loadedTrackRef.current?.id)
   }, [])
 
-  // Só carrega o SDK quando a conta já está conectada. Sem isso, o SDK
-  // tentaria obter um token inexistente e o navegador exibiria um erro de DRM.
+  const clearReconnectTimer = useCallback(() => {
+    if (reconnectTimerRef.current !== null) {
+      window.clearTimeout(reconnectTimerRef.current)
+      reconnectTimerRef.current = null
+    }
+  }, [])
+
+  const connectPlayer = useCallback(async (): Promise<boolean> => {
+    if (deviceIdRef.current) return true
+    if (connectingRef.current) return false
+
+    const player = playerRef.current
+    if (!player) return false
+
+    connectingRef.current = true
+    try {
+      return await player.connect()
+    } catch {
+      return false
+    } finally {
+      connectingRef.current = false
+    }
+  }, [])
+
+  const scheduleReconnect = useCallback(() => {
+    if (reconnectTimerRef.current !== null) return
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+      // Em mobile o navegador suspende a aba em segundo plano. Tentaremos de
+      // novo quando o usuário voltar, em vez de gastar tentativas dormindo.
+      return
+    }
+
+    const attempt = connectAttemptRef.current
+    if (attempt >= 6) {
+      setError(
+        'Não foi possível reconectar o player do Spotify. Verifique a internet e toque em "Tentar novamente".'
+      )
+      return
+    }
+
+    connectAttemptRef.current = attempt + 1
+    const delay = nextReconnectDelay(attempt)
+
+    reconnectTimerRef.current = window.setTimeout(() => {
+      reconnectTimerRef.current = null
+      void connectPlayer().then((connected) => {
+        if (!connected) scheduleReconnectRef.current()
+      })
+    }, delay)
+  }, [connectPlayer])
+
+  useEffect(() => {
+    scheduleReconnectRef.current = scheduleReconnect
+  }, [scheduleReconnect])
+
+  // Status da integração. Um cold start do Render ou uma troca de rede no
+  // celular não deve marcar a conta como desconhecida para sempre.
   useEffect(() => {
     let cancelled = false
+    let attempt = 0
+    let timer: number | null = null
 
-    void apiSpotify
-      .status()
-      .then((response) => {
+    const load = async () => {
+      try {
+        const response = await apiSpotify.status()
         if (cancelled) return
         if (!response.success || !response.data) {
-          setSpotifyConnected(false)
-          setError('Não foi possível verificar a conexão com o Spotify.')
-          return
+          throw new Error('invalid_status')
         }
-        if (!response.data.configured) {
+
+        const data = response.data
+        if (!data.configured) {
           setSpotifyConnected(false)
+          setAccountError(null)
           setError('Spotify não configurado no servidor. Abra Configurações > Spotify.')
           return
         }
-        if (!response.data.connected) {
+        if (!data.connected) {
           setSpotifyConnected(false)
+          setAccountError(null)
           setError('Conecte sua conta do Spotify em Configurações > Spotify.')
           return
         }
+
         setSpotifyConnected(true)
-        setError(null)
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setSpotifyConnected(false)
-          setError('Não foi possível verificar a conexão com o Spotify.')
+        setAccountError(data.premium ? null : SPOTIFY_PREMIUM_MESSAGE)
+        setError((current) => {
+          if (!current) return null
+          return /conecte sua conta|não configurado no servidor|não foi possível verificar/i.test(
+            current
+          )
+            ? null
+            : current
+        })
+      } catch {
+        if (cancelled) return
+        attempt += 1
+        if (attempt < 3) {
+          timer = window.setTimeout(load, attempt * 2000)
+          return
         }
-      })
+        setSpotifyConnected(false)
+        setError(
+          'Não foi possível verificar a conexão com o Spotify. Verifique a internet e toque em "Tentar novamente".'
+        )
+      }
+    }
+
+    void load()
 
     return () => {
       cancelled = true
+      if (timer !== null) window.clearTimeout(timer)
     }
-  }, [])
+  }, [statusReloadToken])
 
   // Reage à desconexão feita em Configurações sem exigir recarregar a página.
   useEffect(() => {
     const handleDisconnected = () => {
       tokenCache = null
+      clearReconnectTimer()
       try {
         playerRef.current?.disconnect()
       } catch {
@@ -400,15 +897,31 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
       }
       playerRef.current = null
       deviceIdRef.current = null
+      loadedTrackRef.current = null
       loadedUriRef.current = null
       endedUriRef.current = null
+      startedUriRef.current = null
+      lastPositionRef.current = 0
+      lastDurationRef.current = 0
       syncInFlightRef.current = false
       autoPlayInFlightRef.current = false
+      endedInFlightRef.current = false
+      activationPromiseRef.current = null
+      connectingRef.current = false
+      // Invalida qualquer play em andamento para ele não reativar a UI depois
+      // que a conta foi desconectada.
+      loadSeqRef.current += 1
+      startingUriRef.current = null
+      startingPromiseRef.current = null
+      audioUnlockedRef.current = false
+      needsActivationRef.current = false
+      setNeedsAudioActivationState(false)
       updateTrack(null)
       updatePlaying(false)
       setIsReady(false)
       setIsLoading(false)
       setSpotifyConnected(false)
+      setAccountError(null)
       setPositionMs(0)
       setDurationMs(0)
       setError('Conecte sua conta do Spotify em Configurações > Spotify.')
@@ -421,97 +934,242 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
       // Evita que um token de uma sessão anterior sobreviva ao logout.
       tokenCache = null
     }
-  }, [updatePlaying, updateTrack])
+  }, [clearReconnectTimer, updatePlaying, updateTrack])
 
   // Cria o dispositivo Spotify Connect no navegador.
   useEffect(() => {
     if (spotifyConnected !== true) return
-    let cancelled = false
 
-    loadSpotifySdk()
+    let cancelled = false
+    const localPlayerRef: { current: SpotifyPlayer | null } = { current: null }
+
+    clearReconnectTimer()
+
+    void loadSpotifySdk()
       .then((Spotify) => {
         if (cancelled) return
+
+        if (playerRef.current) {
+          try {
+            playerRef.current.disconnect()
+          } catch {
+            // Player antigo já removido.
+          }
+          playerRef.current = null
+          deviceIdRef.current = null
+        }
 
         const player = new Spotify.Player({
           name: 'PixTune',
           volume: volumeRef.current / 100,
           getOAuthToken: (callback) => {
             void fetchSpotifyToken()
-              .then(callback)
+              .then((token) => callback(token))
               .catch((err) => {
-                setError(
-                  err instanceof Error
-                    ? err.message
-                    : 'Conecte sua conta do Spotify nas configurações.'
-                )
+                const info = toPlaybackErrorInfo(err, isMobileRef.current)
+                setError(info.message)
               })
           },
         })
 
+        localPlayerRef.current = player
         playerRef.current = player
 
         player.addListener('ready', ({ device_id }: { device_id: string }) => {
+          if (cancelled) return
+          clearReconnectTimer()
+          connectAttemptRef.current = 0
           deviceIdRef.current = device_id
           setIsReady(true)
-          setError(null)
+          setError((current) => {
+            if (!current) return null
+            // Limpa somente avisos de conexão/carregamento; um erro real de
+            // reprodução ou de conta continua visível.
+            return /conect|player|dispositivo|carregar|inicializar/i.test(current)
+              ? null
+              : current
+          })
           void player.setVolume(volumeRef.current / 100).catch(() => {})
           void refreshRef.current()
         })
 
         player.addListener('not_ready', () => {
+          if (cancelled) return
           setIsReady(false)
           deviceIdRef.current = null
+          startedUriRef.current = null
+          updatePlaying(false)
+          scheduleReconnectRef.current()
         })
 
-        player.addListener('player_state_changed', (state: SpotifyPlaybackState | null) => {
-          if (!state) return
-          setPositionMs(state.position)
-          setDurationMs(state.duration)
-          updatePlaying(!state.paused)
-          maybeFinish(state)
-        })
-
-        player.addListener('initialization_error', ({ message }: { message: string }) => {
-          setError(message || 'Não foi possível inicializar o player do Spotify.')
-        })
-        player.addListener('authentication_error', ({ message }: { message: string }) => {
-          tokenCache = null
-          setError(
-            message ||
-              'Sessão do Spotify expirada. Reconecte a conta em Configurações > Spotify.'
-          )
-        })
-        player.addListener('account_error', () => {
-          setError('O Spotify exige uma conta Premium para usar o Web Playback SDK.')
-        })
-        player.addListener('playback_error', ({ message }: { message: string }) => {
-          setError(message || 'Não foi possível reproduzir esta faixa.')
-        })
-
-        void player.connect().then((connected) => {
-          if (!connected && !cancelled) {
-            setError('Não foi possível conectar o dispositivo PixTune ao Spotify.')
+        player.addListener(
+          'player_state_changed',
+          (state: SpotifyPlaybackState | null) => {
+            if (cancelled || !state) return
+            setPositionMs(state.position)
+            setDurationMs(state.duration)
+            if (!state.paused) {
+              const stateUri = state.track_window?.current_track?.uri
+              if (stateUri) startedUriRef.current = stateUri
+              // O SDK está realmente tocando: a UI não precisa mais pedir
+              // um novo gesto.
+              setNeedsAudioActivation(false)
+            }
+            updatePlaying(!state.paused)
+            maybeFinish(state)
           }
+        )
+
+        player.addListener(
+          'initialization_error',
+          ({ message }: { message: string }) => {
+            if (cancelled) return
+            setIsReady(false)
+            deviceIdRef.current = null
+            startedUriRef.current = null
+            setError(playbackErrorMessage(message, { mobile: isMobileRef.current }))
+            if (message) {
+              console.warn('[PixTune] Spotify initialization_error:', message)
+            }
+          }
+        )
+
+        player.addListener(
+          'authentication_error',
+          ({ message }: { message: string }) => {
+            if (cancelled) return
+            tokenCache = null
+            setIsReady(false)
+            deviceIdRef.current = null
+            startedUriRef.current = null
+            setError(SPOTIFY_AUTH_MESSAGE)
+            setSpotifyConnected(false)
+            if (message) {
+              console.warn('[PixTune] Spotify authentication_error:', message)
+            }
+          }
+        )
+
+        player.addListener('account_error', () => {
+          if (cancelled) return
+          setAccountError(SPOTIFY_PREMIUM_MESSAGE)
         })
+
+        player.addListener(
+          'playback_error',
+          ({ message }: { message: string }) => {
+            if (cancelled) return
+            setIsLoading(false)
+            updatePlaying(false)
+            startedUriRef.current = null
+            const blocked = isAutoplayBlockedReason(message)
+            if (blocked) setNeedsAudioActivation(true)
+            setError(playbackErrorMessage(message, { mobile: isMobileRef.current }))
+            if (message) {
+              console.warn('[PixTune] Spotify playback_error:', message)
+            }
+          }
+        )
+
+        connectingRef.current = true
+        void player
+          .connect()
+          .then((connected) => {
+            if (!connected && !cancelled) {
+              setError(
+                'Não foi possível conectar o dispositivo PixTune ao Spotify. Tentando novamente...'
+              )
+              scheduleReconnectRef.current()
+            }
+          })
+          .catch(() => {
+            if (!cancelled) {
+              setError(
+                'Não foi possível conectar o dispositivo PixTune ao Spotify. Tentando novamente...'
+              )
+              scheduleReconnectRef.current()
+            }
+          })
+          .finally(() => {
+            connectingRef.current = false
+          })
       })
       .catch((err) => {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : 'Erro ao carregar o player do Spotify')
+          setIsReady(false)
+          setError(
+            err instanceof Error
+              ? err.message
+              : 'Erro ao carregar o player do Spotify. Tente novamente.'
+          )
         }
       })
 
     return () => {
       cancelled = true
-      try {
-        playerRef.current?.disconnect()
-      } catch {
-        // O player pode já ter sido removido.
-      }
-      playerRef.current = null
+      clearReconnectTimer()
+      connectingRef.current = false
+
+      // Usa a referência local para não desconectar um player criado por uma
+      // inicialização mais nova (StrictMode/recarregamento do SDK).
+      const current = localPlayerRef.current
+      localPlayerRef.current = null
+      if (playerRef.current === current) playerRef.current = null
       deviceIdRef.current = null
+      // Invalida um apply/start antigo; o próximo player começa do zero.
+      loadSeqRef.current += 1
+      startingUriRef.current = null
+      startingPromiseRef.current = null
+      startedUriRef.current = null
       setIsReady(false)
+      updatePlaying(false)
+
+      if (current) {
+        try {
+          current.disconnect()
+        } catch {
+          // Player já removido.
+        }
+      }
     }
-  }, [maybeFinish, spotifyConnected, updatePlaying])
+  }, [
+    clearReconnectTimer,
+    maybeFinish,
+    sdkReloadToken,
+    setNeedsAudioActivation,
+    spotifyConnected,
+    updatePlaying,
+  ])
+
+  // Qualquer toque/clique/tecla pode liberar o áudio no mobile. Também
+  // aproveitamos o primeiro gesto para tentar registrar o dispositivo, caso
+  // o connect() automático tenha sido bloqueado pelo navegador.
+  useEffect(() => {
+    if (spotifyConnected !== true) return
+
+    let lastAttempt = 0
+    const unlock = () => {
+      if (!deviceIdRef.current) {
+        void connectPlayer()
+      }
+      if (audioUnlockedRef.current) return
+
+      const now = Date.now()
+      if (now - lastAttempt < 1500) return
+      lastAttempt = now
+      void activateAudio()
+    }
+
+    window.addEventListener('pointerdown', unlock, true)
+    window.addEventListener('keydown', unlock, true)
+    window.addEventListener('touchstart', unlock, { capture: true, passive: true })
+
+    return () => {
+      window.removeEventListener('pointerdown', unlock, true)
+      window.removeEventListener('keydown', unlock, true)
+      window.removeEventListener('touchstart', unlock, true)
+    }
+  }, [activateAudio, connectPlayer, spotifyConnected])
 
   // Sincroniza com o estado real da fila no backend.
   const refresh = useCallback(async () => {
@@ -524,30 +1182,65 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
 
       const data = response.data
 
-      if (Date.now() - volumeChangedAtRef.current > 2000 && volumeRef.current !== data.volume) {
+      if (
+        Date.now() - volumeChangedAtRef.current > 2000 &&
+        volumeRef.current !== data.volume
+      ) {
         updateVolume(data.volume)
         void playerRef.current?.setVolume(data.volume / 100).catch(() => {})
       }
 
+      const canAuto = spotifyConnected === true && canAutoPlayNow()
+
       if (data.currentTrack) {
         const current = data.currentTrack
         const uri = current.providerId ? spotifyTrackUri(current.providerId) : null
-        const changed = trackRef.current?.id !== current.id || loadedUriRef.current !== uri
+        const changed =
+          trackRef.current?.id !== current.id || loadedUriRef.current !== uri
 
         if (changed) {
-          applyTrack(current, data.isPlaying)
+          applyTrack(current, data.isPlaying && canAuto)
+          if (data.isPlaying && !canAuto && spotifyConnected === true) {
+            // O servidor achava que estava tocando, mas este navegador não
+            // pode iniciar áudio sem um gesto. Alinha o estado para a UI e a
+            // fila não ficarem "tocando" sem som.
+            pauseServerForActivation()
+            setNeedsAudioActivation(true)
+          }
         } else {
           updateTrack(current)
+
           if (data.isPlaying && !isPlayingRef.current && uri) {
-            void startSpotifyUri(uri)
-              .then(() => updatePlaying(true))
-              .catch(() => {
-                // O navegador pode exigir um clique; o erro fica visível.
-              })
-          } else if (!data.isPlaying && isPlayingRef.current) {
+            if (canAuto && deviceIdRef.current) {
+              void startUri(uri)
+                .then(() => {
+                  if (loadedUriRef.current !== uri) return
+                  startedUriRef.current = uri
+                  updatePlaying(true)
+                  setNeedsAudioActivation(false)
+                })
+                .catch((err) => {
+                  if (loadedUriRef.current !== uri) return
+                  const info = toPlaybackErrorInfo(err, isMobileRef.current)
+                  if (info.needsActivation) setNeedsAudioActivation(true)
+                  setError(info.message)
+                })
+            } else if (!deviceIdRef.current) {
+              // Aguarda o evento `ready`; tentar agora geraria um 404 de
+              // dispositivo inexistente no mobile.
+            } else if (spotifyConnected === true) {
+              pauseServerForActivation()
+              setNeedsAudioActivation(true)
+            }
+          } else if (
+            !data.isPlaying &&
+            isPlayingRef.current &&
+            Date.now() - lastUserPlayAtRef.current > 10_000
+          ) {
             void playerRef.current?.pause().catch(() => {})
             updatePlaying(false)
           }
+
           if (current.durationMs) setDurationMs(current.durationMs)
         }
       } else if (trackRef.current) {
@@ -564,10 +1257,20 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
       ) {
         lastAutoPlayAttemptRef.current = Date.now()
         autoPlayInFlightRef.current = true
+
         try {
           const playResponse = await apiMusic.play()
           const next = playResponse.data?.track ?? null
-          if (next) applyTrack(next, true)
+          if (next) {
+            applyTrack(next, canAuto)
+            if (!canAuto) {
+              pauseServerForActivation()
+              setNeedsAudioActivation(true)
+            }
+          }
+        } catch (err) {
+          const info = toPlaybackErrorInfo(err, isMobileRef.current)
+          setError(info.message)
         } finally {
           autoPlayInFlightRef.current = false
         }
@@ -579,8 +1282,11 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
     }
   }, [
     applyTrack,
+    canAutoPlayNow,
+    pauseServerForActivation,
+    setNeedsAudioActivation,
     spotifyConnected,
-    startSpotifyUri,
+    startUri,
     updatePlaying,
     updateTrack,
     updateVolume,
@@ -598,6 +1304,36 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
     return () => window.clearInterval(interval)
   }, [refresh])
 
+  // Ao voltar de segundo plano (muito comum no celular), atualiza o estado e
+  // tenta reconectar o dispositivo se o Spotify o removeu enquanto a aba
+  // estava suspensa. Se a conexão ainda não foi confirmada, reconsulta o
+  // status (o usuário pode ter conectado o Spotify em outra aba).
+  useEffect(() => {
+    const handleVisible = () => {
+      if (document.visibilityState !== 'visible') return
+
+      if (spotifyConnected !== true) {
+        setStatusReloadToken((value) => value + 1)
+        return
+      }
+
+      void refreshRef.current()
+      if (!deviceIdRef.current) {
+        // Ao voltar para a aba, damos uma nova rodada de tentativas.
+        connectAttemptRef.current = 0
+        scheduleReconnectRef.current()
+      }
+    }
+
+    document.addEventListener('visibilitychange', handleVisible)
+    window.addEventListener('online', handleVisible)
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisible)
+      window.removeEventListener('online', handleVisible)
+    }
+  }, [spotifyConnected])
+
   // Posição, duração e fim de faixa vêm do player oficial.
   useEffect(() => {
     const interval = window.setInterval(() => {
@@ -610,6 +1346,14 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
           if (!state) return
           setPositionMs(state.position)
           setDurationMs(state.duration)
+          if (!state.paused) {
+            const stateUri = state.track_window?.current_track?.uri
+            if (stateUri) startedUriRef.current = stateUri
+            setNeedsAudioActivation(false)
+          }
+          // O polling corrige a UI mesmo quando o evento
+          // player_state_changed é atrasado/suspenso no celular.
+          updatePlaying(!state.paused)
           maybeFinish(state)
         })
         .catch(() => {
@@ -618,22 +1362,7 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
     }, 1000)
 
     return () => window.clearInterval(interval)
-  }, [maybeFinish])
-
-  // Confere Premium e conexão sem impedir o restante da interface.
-  useEffect(() => {
-    void apiSpotify
-      .status()
-      .then((response) => {
-        if (!response.data?.connected) return
-        if (!response.data.premium) {
-          setError('O Spotify exige uma conta Premium para usar o Web Playback SDK.')
-        }
-      })
-      .catch(() => {
-        // O erro real aparecerá quando o player tentar obter o token.
-      })
-  }, [])
+  }, [maybeFinish, setNeedsAudioActivation, updatePlaying])
 
   const playTrack = useCallback(
     async (target: MusicTrack) => {
@@ -643,22 +1372,29 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
       }
 
       setError(null)
-      void playerRef.current?.activateElement().catch(() => {})
+      lastUserPlayAtRef.current = Date.now()
+      // Precisa ser síncrono, ainda dentro do gesto do usuário.
+      const activation = activateAudio()
 
       try {
         const response = await apiMusic.play({ trackId: target.id })
         const next = response.data?.track ?? target
+        await activation.catch(() => false)
         applyTrack(next, true)
       } catch (err) {
         // A faixa atual pode continuar tocando; não force o ícone para pausado.
-        setError(err instanceof Error ? err.message : 'Erro ao tocar a música')
+        const info = toPlaybackErrorInfo(err, isMobileRef.current)
+        if (info.needsActivation) setNeedsAudioActivation(true)
+        setError(info.message)
       }
     },
-    [applyTrack]
+    [activateAudio, applyTrack, setNeedsAudioActivation]
   )
 
   const togglePlay = useCallback(async () => {
-    void playerRef.current?.activateElement().catch(() => {})
+    // Também precisa ser síncrono: é o gesto que libera o áudio no iOS.
+    const activation = activateAudio()
+    setError(null)
 
     try {
       if (isPlayingRef.current) {
@@ -668,33 +1404,72 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
         return
       }
 
+      lastUserPlayAtRef.current = Date.now()
       const current = trackRef.current
-      if (current && loadedUriRef.current) {
+      const loadedUri = loadedUriRef.current
+      if (current && loadedUri) {
         // Confirma a prioridade no servidor antes de retomar o áudio local.
         await apiMusic.play({ trackId: current.id })
-        try {
-          await playerRef.current?.resume()
-        } catch {
-          await startSpotifyUri(loadedUriRef.current)
+        await activation.catch(() => false)
+
+        // `resume()` só faz sentido se este mesmo URI já foi realmente
+        // iniciado e está pausado no meio. No primeiro play do celular (ou
+        // após erro/reconexão) o SDK não tem faixa carregada; aí é preciso
+        // enviar o play com a URI, senão o botão mudaria para "tocando" sem
+        // áudio nenhum.
+        const player = playerRef.current
+        const canResume =
+          startedUriRef.current === loadedUri &&
+          (lastPositionRef.current > 0 || isPlayingRef.current)
+
+        if (player && canResume) {
+          try {
+            await player.resume()
+            startedUriRef.current = loadedUri
+            endedUriRef.current = null
+            updatePlaying(true)
+            setNeedsAudioActivation(false)
+            return
+          } catch {
+            // O estado do Connect pode ter sido perdido (troca de aba,
+            // reconexão). Cai para iniciar a faixa do começo.
+          }
         }
+
+        await startUri(loadedUri)
+        startedUriRef.current = loadedUri
+        endedUriRef.current = null
         updatePlaying(true)
+        setNeedsAudioActivation(false)
         return
       }
 
       const response = await apiMusic.play()
       const next = response.data?.track ?? null
       if (next) {
+        await activation.catch(() => false)
         applyTrack(next, true)
       } else {
         setError('Nenhuma música do Spotify na fila para tocar.')
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Erro ao controlar a reprodução')
+      const info = toPlaybackErrorInfo(err, isMobileRef.current)
+      if (info.needsActivation) setNeedsAudioActivation(true)
+      setError(info.message)
     }
-  }, [applyTrack, startSpotifyUri, updatePlaying])
+  }, [
+    activateAudio,
+    applyTrack,
+    setNeedsAudioActivation,
+    startUri,
+    updatePlaying,
+  ])
 
   const next = useCallback(async () => {
     setError(null)
+    lastUserPlayAtRef.current = Date.now()
+    void activateAudio()
+
     try {
       const response = await apiMusic.next()
       const nextTrack = response.data?.track ?? null
@@ -704,12 +1479,17 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
         applyTrack(null, false)
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Erro ao pular a música')
+      const info = toPlaybackErrorInfo(err, isMobileRef.current)
+      if (info.needsActivation) setNeedsAudioActivation(true)
+      setError(info.message)
     }
-  }, [applyTrack])
+  }, [activateAudio, applyTrack, setNeedsAudioActivation])
 
   const previous = useCallback(async () => {
     setError(null)
+    lastUserPlayAtRef.current = Date.now()
+    void activateAudio()
+
     try {
       const response = await apiQueue.previous()
       const previousTrack = (response.data?.track ?? null) as MusicTrack | null
@@ -717,9 +1497,11 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
         applyTrack(previousTrack, true)
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Erro ao voltar a música')
+      const info = toPlaybackErrorInfo(err, isMobileRef.current)
+      if (info.needsActivation) setNeedsAudioActivation(true)
+      setError(info.message)
     }
-  }, [applyTrack])
+  }, [activateAudio, applyTrack, setNeedsAudioActivation])
 
   const changeVolume = useCallback(
     (value: number) => {
@@ -738,11 +1520,47 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
     [updateVolume]
   )
 
+  const reconnect = useCallback(async () => {
+    setError(null)
+    // O botão "Tentar novamente" é um gesto do usuário: aproveitamos para
+    // liberar o áudio no mobile antes de sincronizar com o servidor.
+    const activation = activateAudio()
+    connectAttemptRef.current = 0
+    clearReconnectTimer()
+
+    if (spotifyConnected !== true) {
+      setStatusReloadToken((value) => value + 1)
+      return
+    }
+
+    if (!playerRef.current) {
+      // O SDK não chegou a inicializar (script bloqueado, por exemplo).
+      // Recria o player do zero.
+      setSdkReloadToken((value) => value + 1)
+      return
+    }
+
+    if (!deviceIdRef.current) {
+      const connected = await connectPlayer()
+      if (!connected) {
+        setError(
+          'Não foi possível reconectar o player do Spotify. Tentando novamente...'
+        )
+        scheduleReconnectRef.current()
+        return
+      }
+    }
+
+    await activation.catch(() => false)
+    await refreshRef.current()
+  }, [activateAudio, clearReconnectTimer, connectPlayer, spotifyConnected])
+
   useEffect(() => {
     return () => {
       if (volumeDebounceRef.current) window.clearTimeout(volumeDebounceRef.current)
+      clearReconnectTimer()
     }
-  }, [])
+  }, [clearReconnectTimer])
 
   return (
     <AudioPlayerContext.Provider
@@ -755,12 +1573,16 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
         positionMs,
         durationMs,
         error,
+        accountError,
+        needsAudioActivation,
+        isMobile,
         playTrack,
         togglePlay,
         next,
         previous,
         setVolume: changeVolume,
         refresh,
+        reconnect,
       }}
     >
       {children}

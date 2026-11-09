@@ -136,6 +136,10 @@ export function SpotifySettings({
             <li>Não baixa, extrai ou contorna a proteção de nenhum áudio.</li>
             <li>Não toca no servidor: o áudio sai do próprio Spotify para o navegador.</li>
             <li>Não funciona sem Spotify Premium nem com a aba do PixTune fechada.</li>
+            <li>
+              Não contorna o bloqueio de autoplay do navegador. No celular, o áudio só começa
+              depois de tocar no botão Play do PixTune.
+            </li>
           </ul>
         </div>
 
@@ -145,7 +149,14 @@ export function SpotifySettings({
             <div className="space-y-2">
               <p>
                 <strong>Spotify Premium é obrigatório.</strong> O Web Playback SDK não reproduz
-                áudio em contas gratuitas.
+                áudio em contas gratuitas. Planos Premium cobrados pela App Store ou Google Play
+                também não são aceitos pelo SDK; é necessário um plano Premium cobrado pelo
+                Spotify.
+              </p>
+              <p>
+                No celular, o navegador exige um toque no botão Play para liberar o áudio. Se o
+                player ficar em "Toque em Play" ou exibir erro de autoplay, toque no botão Play
+                do PixTune; nenhuma reprodução é simulada.
               </p>
               <p>
                 O uso do Spotify em transmissões públicas ou comerciais é restrito pelos termos do
