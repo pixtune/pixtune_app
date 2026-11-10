@@ -8,23 +8,35 @@ import {
   type ReactNode,
 } from 'react'
 import { apiMusic, apiQueue, apiSpotify, type MusicTrack } from '@client/api/client'
-import { spotifyTrackUri } from '@shared/spotify'
+import { extractSpotifyTrackId, spotifyTrackUri } from '@shared/spotify'
 import {
+  isBrowserDrmReason,
   isAmbiguousSdkPlaybackError,
   isAutoplayBlockedReason,
   isDeviceReason,
   isMobileBrowser,
   isPremiumReason,
+  isRestrictionReason,
   nextReconnectDelay,
   playbackErrorMessage,
   shouldAttemptAutoplay,
   SPOTIFY_AUTH_MESSAGE,
   SPOTIFY_DEVICE_MESSAGE,
+  SPOTIFY_DRM_MESSAGE,
   SPOTIFY_GENERIC_MESSAGE,
+  SPOTIFY_INIT_MESSAGE,
   SPOTIFY_MOBILE_AUTOPLAY_MESSAGE,
   SPOTIFY_NETWORK_MESSAGE,
   SPOTIFY_PREMIUM_MESSAGE,
+  SPOTIFY_RESTRICTION_MESSAGE,
+  SPOTIFY_TRACK_INVALID_MESSAGE,
 } from './playbackPolicy'
+import {
+  drmProbeSummary,
+  drmWorks,
+  probeSpotifyDrm,
+  type DrmProbeResult,
+} from './spotifyDiagnostics'
 
 /**
  * Player oficial do Spotify usando o Web Playback SDK.
@@ -112,6 +124,39 @@ function runtimeIsMobile(): boolean {
     screenWidth,
     userAgentMobile: userAgentData?.mobile,
   })
+}
+
+function errorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message
+  if (typeof error === 'string') return error
+  return 'erro desconhecido'
+}
+
+/**
+ * O probe é de Widevine. No iOS o EME usa FairPlay e no Safari desktop o
+ * key system também não é Widevine; por isso o resultado só bloqueia a
+ * reprodução no Android, que é o escopo desta correção. Em outras plataformas
+ * o probe continua disponível no diagnóstico manual, sem bloquear o desktop.
+ */
+function runtimeIsAndroid(): boolean {
+  if (typeof navigator === 'undefined') return false
+  if (/Android/i.test(navigator.userAgent)) return true
+
+  const userAgentData = (
+    navigator as Navigator & { userAgentData?: { platform?: string } }
+  ).userAgentData
+  if (userAgentData?.platform === 'Android') return true
+
+  // Android em "Site para desktop": UA vira Linux, mas o ponteiro continua
+  // coarse e há toque. Windows/macOS/Linux desktop com mouse não entram.
+  const coarsePointer =
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(pointer: coarse)').matches
+  return (
+    /Linux/i.test(navigator.platform) &&
+    navigator.maxTouchPoints > 0 &&
+    coarsePointer
+  )
 }
 
 let sdkPromise: Promise<SpotifyNamespace> | null = null
@@ -326,55 +371,91 @@ async function playSpotifyUri(
   let lastMessage = ''
   let lastStatus = 0
 
-  for (let attempt = 0; attempt < 4; attempt += 1) {
+  // No máximo 3 tentativas: a primeira + uma após transferir o device + uma
+  // última para um 404 transitório. Erros de DRM, faixa inválida, Premium,
+  // autoplay e restrição não são repetidos.
+  for (let attempt = 0; attempt < 3; attempt += 1) {
     const response = await request()
     if (response.ok || response.status === 204) return
 
     lastStatus = response.status
     const { message, reason } = await readSpotifyError(response)
     lastMessage = [message, reason].filter(Boolean).join(' — ')
+    const detail = `HTTP ${response.status} em PUT /me/player/play: ${lastMessage || '(sem corpo)'}`
 
     if (response.status === 401) {
-      throw new PlaybackError(
-        SPOTIFY_AUTH_MESSAGE,
-        false,
-        `HTTP 401 em PUT /me/player/play: ${lastMessage || '(sem corpo)'}`
-      )
+      throw new PlaybackError(SPOTIFY_AUTH_MESSAGE, false, detail)
     }
     if (response.status === 429) {
       throw new PlaybackError(
         playbackErrorMessage('rate limit', { mobile }),
         false,
-        `HTTP 429 em PUT /me/player/play: ${lastMessage || '(sem corpo)'}`
+        detail
+      )
+    }
+    if (response.status === 400) {
+      // URI inválida, episódio enviado como faixa, mercado etc. Repetir não
+      // resolve e só gera chamadas desnecessárias à API.
+      throw new PlaybackError(
+        SPOTIFY_TRACK_INVALID_MESSAGE,
+        false,
+        detail
       )
     }
     if (response.status === 403) {
       if (isPremiumReason(lastMessage)) {
-        throw new PlaybackError(
-          SPOTIFY_PREMIUM_MESSAGE,
-          false,
-          `HTTP 403 em PUT /me/player/play: ${lastMessage || '(sem corpo)'}`
-        )
+        throw new PlaybackError(SPOTIFY_PREMIUM_MESSAGE, false, detail)
       }
-      // Só vale a pena repetir quando o problema é o dispositivo ainda não
-      // registrado. Autoplay, restrição e erros desconhecidos não melhoram.
-      if (!isDeviceReason(lastMessage) && lastMessage) {
+      if (isRestrictionReason(lastMessage)) {
+        throw new PlaybackError(SPOTIFY_RESTRICTION_MESSAGE, false, detail)
+      }
+      // DRM antes de autoplay: "protected content is blocked" contém
+      // "blocked", mas a causa não é gesto do usuário.
+      if (isBrowserDrmReason(lastMessage)) {
+        throw new PlaybackError(SPOTIFY_DRM_MESSAGE, false, detail)
+      }
+      // Autoplay precisa de um novo gesto; não adianta repetir a chamada.
+      if (isAutoplayBlockedReason(lastMessage)) {
         throw new PlaybackError(
           playbackErrorMessage(lastMessage, { mobile }),
-          isAutoplayBlockedReason(lastMessage),
-          `HTTP 403 em PUT /me/player/play: ${lastMessage}`
+          true,
+          detail
         )
+      }
+      // DRM/erros desconhecidos: repetir o play não melhora. Só
+      // transfere/repeti quando o device ainda não estava disponível.
+      if (lastMessage && !isDeviceReason(lastMessage)) {
+        throw new PlaybackError(
+          playbackErrorMessage(lastMessage, { mobile }),
+          false,
+          detail
+        )
+      }
+      // 403 sem corpo: pode ser o device ainda registrando. Transfere uma vez.
+      if (!lastMessage && attempt === 0) {
+        await transferPlayback(deviceId, mobile).catch(() => {
+          // A segunda tentativa abaixo é a última.
+        })
+      }
+    }
+    if (response.status === 404 || isDeviceReason(lastMessage)) {
+      // Device ainda registrando. Transferimos uma única vez e repetimos.
+      if (attempt === 0) {
+        await transferPlayback(deviceId, mobile).catch(() => {
+          // O dispositivo pode ainda não estar disponível; a segunda
+          // tentativa abaixo é a última.
+        })
+      }
+      if (attempt < 2) {
+        await sleep(600)
+        continue
       }
     }
 
-    if (attempt < 3) {
-      if (attempt === 0) {
-        await transferPlayback(deviceId, mobile).catch(() => {
-          // O dispositivo pode ainda não estar disponível. O retry abaixo
-          // tenta novamente; o erro final mostra a orientação correta.
-        })
-      }
-      await sleep(400 * (attempt + 1))
+    // 403 sem corpo ou 5xx: uma última tentativa, sem transferir de novo.
+    if (attempt < 2) {
+      await sleep(600)
+      continue
     }
   }
 
@@ -450,6 +531,8 @@ interface AudioPlayerContextValue {
   refresh: () => Promise<void>
   /** Recria/reconecta o player e tenta buscar o status novamente. */
   reconnect: () => Promise<void>
+  /** Coleta um relatório técnico (sem tokens) para diagnosticar o mobile. */
+  diagnose: () => Promise<string>
 }
 
 const AudioPlayerContext = createContext<AudioPlayerContextValue | null>(null)
@@ -494,6 +577,17 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
   const audioUnlockedRef = useRef(false)
   const needsActivationRef = useRef(false)
   const activationPromiseRef = useRef<Promise<boolean> | null>(null)
+  /** Último erro cru do activateElement(), exibido no diagnóstico. */
+  const lastActivationErrorRef = useRef<string | null>(null)
+  /** Probe de DRM/EME executado uma única vez por página. */
+  const drmProbeRef = useRef<Promise<DrmProbeResult[]> | null>(null)
+  const [drmSummary, setDrmSummary] = useState<string | null>(null)
+  /**
+   * Erro fatal (DRM, Premium, faixa inválida) que impede o polling de tentar
+   * o play repetidamente. É limpo apenas por um gesto explícito do usuário.
+   */
+  const fatalPlaybackRef = useRef<string | null>(null)
+  const diagnosticsInFlightRef = useRef<Promise<string> | null>(null)
   const loadSeqRef = useRef(0)
   const endedInFlightRef = useRef(false)
   const startingUriRef = useRef<string | null>(null)
@@ -534,15 +628,51 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
     setNeedsAudioActivationState(false)
   }, [])
 
+  const markFatalPlayback = useCallback((reason: string) => {
+    fatalPlaybackRef.current = reason
+  }, [])
+
+  const clearFatalPlayback = useCallback(() => {
+    fatalPlaybackRef.current = null
+  }, [])
+
+  const getDrmProbe = useCallback((): Promise<DrmProbeResult[]> => {
+    if (!drmProbeRef.current) {
+      drmProbeRef.current = probeSpotifyDrm()
+        .then((results) => {
+          setDrmSummary(drmProbeSummary(results))
+          return results
+        })
+        .catch((error) => {
+          const results: DrmProbeResult[] = [
+            {
+              label: 'Widevine',
+              configuration: 'default',
+              supported: false,
+              mediaKeys: false,
+              error: errorMessage(error),
+            },
+          ]
+          setDrmSummary(drmProbeSummary(results))
+          return results
+        })
+    }
+    return drmProbeRef.current
+  }, [])
+
   /**
    * Libera o elemento de áudio do SDK. Precisa ser chamado dentro de um gesto
    * do usuário (clique/toque); por isso nunca é chamado pelo polling.
+   *
+   * O erro do activateElement() não é engolido: ele é anexado ao diagnóstico.
+   * Em alguns aparelhos ele falha por DRM, e a mensagem original é a única
+   * forma de separar DRM de bloqueio de autoplay.
    */
-  const activateAudio = useCallback((): Promise<boolean> => {
+  const activateAudio = useCallback((force = false): Promise<boolean> => {
     // Se uma falha de autoplay já sinalizou necessidade de novo gesto, não
     // confie no estado antigo: o elemento pode ter sido suspenso pelo sistema.
     // Chamamos activateElement() de novo dentro do clique do usuário.
-    if (audioUnlockedRef.current && !needsActivationRef.current) {
+    if (!force && audioUnlockedRef.current && !needsActivationRef.current) {
       return Promise.resolve(true)
     }
 
@@ -550,16 +680,30 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
     if (existing) return existing
 
     const player = playerRef.current
-    if (!player?.activateElement) return Promise.resolve(false)
+    if (!player?.activateElement) {
+      const message = 'player.activateElement indisponível'
+      lastActivationErrorRef.current = message
+      return Promise.resolve(false)
+    }
 
     let promise: Promise<boolean>
     promise = player
       .activateElement()
       .then(() => {
+        lastActivationErrorRef.current = null
         markAudioUnlocked()
         return true
       })
-      .catch(() => false)
+      .catch((error) => {
+        const message = errorMessage(error)
+        lastActivationErrorRef.current = message
+        setErrorDetail((current) => {
+          const line = `activateElement: ${message}`
+          if (!current) return line
+          return current.includes(line) ? current : `${current}\n${line}`
+        })
+        return false
+      })
       .finally(() => {
         if (activationPromiseRef.current === promise) {
           activationPromiseRef.current = null
@@ -669,6 +813,7 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
 
       if (nextTrack.provider !== 'spotify' || !nextTrack.providerId) {
         setError('Esta faixa não está disponível no Spotify.')
+        setErrorDetail(`provider inválido: ${nextTrack.provider || '(vazio)'}`)
         void playerRef.current?.pause().catch(() => {})
         updatePlaying(false)
         setIsLoading(false)
@@ -679,7 +824,24 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
         return
       }
 
-      const uri = spotifyTrackUri(nextTrack.providerId)
+      // Aceita ID puro, URI ou URL do Spotify. Se não for uma faixa válida
+      // (ex.: episódio de podcast salvo como track), não chama a API.
+      const spotifyId = extractSpotifyTrackId(nextTrack.providerId)
+      if (!spotifyId) {
+        setError(SPOTIFY_TRACK_INVALID_MESSAGE)
+        setErrorDetail(`providerId inválido para faixa: ${nextTrack.providerId}`)
+        markFatalPlayback('invalid_track')
+        void playerRef.current?.pause().catch(() => {})
+        updatePlaying(false)
+        setIsLoading(false)
+        loadedTrackRef.current = null
+        loadedUriRef.current = null
+        endedUriRef.current = null
+        startedUriRef.current = null
+        return
+      }
+
+      const uri = spotifyTrackUri(spotifyId)
       const changed = loadedUriRef.current !== uri
 
       // Limpa erros de reprodução, mas preserva avisos de conta/configuração:
@@ -704,6 +866,18 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
 
       if (autoplay) {
         if (!changed && isPlayingRef.current) return
+
+        // Depois de um erro fatal (DRM, faixa inválida, Premium), o polling
+        // não deve continuar chamando o Spotify. Um gesto explícito do usuário
+        // limpa esse bloqueio antes de chegar aqui.
+        if (
+          fatalPlaybackRef.current &&
+          Date.now() - lastUserPlayAtRef.current > 10_000
+        ) {
+          updatePlaying(false)
+          setIsLoading(false)
+          return
+        }
 
         loadedTrackRef.current = nextTrack
         loadedUriRef.current = uri
@@ -742,6 +916,8 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
               audioUnlockedRef.current = false
               activationPromiseRef.current = null
               setNeedsAudioActivation(true)
+            } else {
+              markFatalPlayback(info.detail || info.message)
             }
             setError(info.message)
             setErrorDetail(info.detail)
@@ -760,7 +936,14 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
       updatePlaying(false)
       setIsLoading(false)
     },
-    [canAutoPlayNow, setNeedsAudioActivation, startUri, updatePlaying, updateTrack]
+    [
+      canAutoPlayNow,
+      markFatalPlayback,
+      setNeedsAudioActivation,
+      startUri,
+      updatePlaying,
+      updateTrack,
+    ]
   )
 
   const handleEnded = useCallback(
@@ -777,9 +960,9 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
           return
         }
 
-        const canAuto = canAutoPlayNow()
+        const canAuto = canAutoPlayNow() && !fatalPlaybackRef.current
         applyTrack(next, canAuto)
-        if (!canAuto) {
+        if (!canAuto && !fatalPlaybackRef.current) {
           // A próxima faixa já foi promovida para `playing` no servidor; como
           // este navegador precisa de um gesto, marcamos como pausada até o
           // usuário tocar em Play.
@@ -788,6 +971,7 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
         }
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Erro ao avançar a fila.')
+        setErrorDetail(`queue_ended: ${errorMessage(err)}`)
         updatePlaying(false)
       } finally {
         endedInFlightRef.current = false
@@ -942,6 +1126,7 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
         setError(
           'Não foi possível verificar a conexão com o Spotify. Verifique a internet e toque em "Tentar novamente".'
         )
+        setErrorDetail('status: falha ao consultar /api/spotify/status após 3 tentativas')
       }
     }
 
@@ -1050,6 +1235,19 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
           connectAttemptRef.current = 0
           deviceIdRef.current = device_id
           setIsReady(true)
+
+          // Um device novo pode resolver falhas transitórias de conexão. Não
+          // limpa erros fatais de DRM/conta/faixa inválida: eles não melhoram
+          // só porque o Connect reconectou.
+          const fatal = fatalPlaybackRef.current
+          if (
+            fatal &&
+            !/drm|account|invalid_track|initialization_error|playback_error/i.test(
+              fatal
+            )
+          ) {
+            clearFatalPlayback()
+          }
           setError((current) => {
             if (!current) return null
             // Limpa somente avisos de conexão/carregamento; um erro real de
@@ -1062,7 +1260,7 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
           void refreshRef.current()
         })
 
-        player.addListener('not_ready', () => {
+        player.addListener('not_ready', ({ device_id }: { device_id?: string }) => {
           if (cancelled) return
           setIsReady(false)
           deviceIdRef.current = null
@@ -1072,6 +1270,9 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
           audioUnlockedRef.current = false
           activationPromiseRef.current = null
           updatePlaying(false)
+          setErrorDetail(
+            `not_ready: device ${device_id ? device_id.slice(0, 8) : 'desconhecido'} saiu do Spotify Connect`
+          )
           scheduleReconnectRef.current()
         })
 
@@ -1103,11 +1304,31 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
             startedUriRef.current = null
             audioUnlockedRef.current = false
             activationPromiseRef.current = null
-            setError(playbackErrorMessage(message, { mobile: isMobileRef.current }))
+            markFatalPlayback(`initialization_error: ${message || '(sem mensagem)'}`)
+            setNeedsAudioActivation(false)
+            setError(
+              isBrowserDrmReason(message)
+                ? SPOTIFY_DRM_MESSAGE
+                : playbackErrorMessage(message, { mobile: isMobileRef.current })
+            )
             setErrorDetail(`initialization_error: ${message || '(sem mensagem)'}`)
             if (message) {
               console.warn('[PixTune] Spotify initialization_error:', message)
             }
+
+            // O initialization_error quase sempre é EME/Widevine. Confirma com
+            // o probe e substitui o texto genérico pela causa real.
+            void getDrmProbe().then((results) => {
+              if (cancelled) return
+              setErrorDetail((current) =>
+                `${current || 'initialization_error'}\nDRM: ${drmProbeSummary(results)}`
+              )
+              if (runtimeIsAndroid() && !drmWorks(results)) {
+                setError(SPOTIFY_DRM_MESSAGE)
+              } else if (!isBrowserDrmReason(message)) {
+                setError(SPOTIFY_INIT_MESSAGE)
+              }
+            })
           }
         )
 
@@ -1130,9 +1351,12 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
           }
         )
 
-        player.addListener('account_error', () => {
+        player.addListener('account_error', ({ message }: { message?: string }) => {
           if (cancelled) return
           setAccountError(SPOTIFY_PREMIUM_MESSAGE)
+          setErrorDetail(`account_error: ${message || '(sem mensagem)'}`)
+          setNeedsAudioActivation(false)
+          markFatalPlayback(`account_error: ${message || 'Premium'}`)
         })
 
         // Evento oficial emitido quando o navegador recusa o autoplay. Sem
@@ -1156,20 +1380,52 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
             setIsLoading(false)
             updatePlaying(false)
             startedUriRef.current = null
+
             const blocked =
               isAutoplayBlockedReason(message) ||
               (isMobileRef.current && isAmbiguousSdkPlaybackError(message))
+
             if (blocked) {
               // Força um novo activateElement() no próximo clique.
               audioUnlockedRef.current = false
               activationPromiseRef.current = null
               setNeedsAudioActivation(true)
+            } else {
+              // DRM, faixa inválida, Premium ou erro desconhecido: não deixa o
+              // polling de 4s chamar o play repetidamente.
+              markFatalPlayback(`playback_error: ${message || '(sem mensagem)'}`)
+              setNeedsAudioActivation(false)
             }
+
             setError(playbackErrorMessage(message, { mobile: isMobileRef.current }))
-            setErrorDetail(`playback_error: ${message || '(sem mensagem)'}`)
+            setErrorDetail(
+              `playback_error: ${message || '(sem mensagem)'}${
+                lastActivationErrorRef.current
+                  ? `\nactivateElement: ${lastActivationErrorRef.current}`
+                  : ''
+              }`
+            )
             if (message) {
               console.warn('[PixTune] Spotify playback_error:', message)
             }
+
+            // "playback error" é genérico. O probe de DRM separa autoplay de
+            // EME/Widevine e permite mostrar a causa real no card.
+            void getDrmProbe().then((results) => {
+              if (cancelled) return
+              setErrorDetail((current) =>
+                `${current || 'playback_error'}\nDRM: ${drmProbeSummary(results)}`
+              )
+              if (runtimeIsAndroid() && !drmWorks(results)) {
+                setError(SPOTIFY_DRM_MESSAGE)
+                setNeedsAudioActivation(false)
+                markFatalPlayback(
+                  `playback_error sem DRM: ${message || '(sem mensagem)'}`
+                )
+              } else if (blocked) {
+                setError(SPOTIFY_MOBILE_AUTOPLAY_MESSAGE)
+              }
+            })
           }
         )
 
@@ -1181,14 +1437,16 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
               setError(
                 'Não foi possível conectar o dispositivo PixTune ao Spotify. Tentando novamente...'
               )
+              setErrorDetail('connect: player.connect() retornou false')
               scheduleReconnectRef.current()
             }
           })
-          .catch(() => {
+          .catch((error) => {
             if (!cancelled) {
               setError(
                 'Não foi possível conectar o dispositivo PixTune ao Spotify. Tentando novamente...'
               )
+              setErrorDetail(`connect: ${errorMessage(error)}`)
               scheduleReconnectRef.current()
             }
           })
@@ -1204,6 +1462,7 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
               ? err.message
               : 'Erro ao carregar o player do Spotify. Tente novamente.'
           )
+          setErrorDetail(`sdk_load: ${errorMessage(err)}`)
         }
       })
 
@@ -1239,13 +1498,38 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
       activationPromiseRef.current = null
     }
   }, [
+    clearFatalPlayback,
     clearReconnectTimer,
+    getDrmProbe,
+    markFatalPlayback,
     maybeFinish,
     sdkReloadToken,
     setNeedsAudioActivation,
     spotifyConnected,
     updatePlaying,
   ])
+
+  // Pré-checagem de DRM/EME no mobile. Se o aparelho não criar MediaKeys,
+  // não adianta tentar autoplay repetidamente: o problema é o pipeline de
+  // áudio protegido, não o gesto do usuário.
+  useEffect(() => {
+    if (!runtimeIsAndroid() || spotifyConnected !== true) return
+
+    let cancelled = false
+    void getDrmProbe().then((results) => {
+      if (cancelled) return
+      if (drmWorks(results)) return
+
+      setError((current) => current || SPOTIFY_DRM_MESSAGE)
+      setErrorDetail((current) => current || `DRM: ${drmProbeSummary(results)}`)
+      setNeedsAudioActivation(false)
+      markFatalPlayback('drm_probe')
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [getDrmProbe, markFatalPlayback, setNeedsAudioActivation, spotifyConnected])
 
   // Qualquer toque/clique/tecla pode liberar o áudio no mobile. Também
   // aproveitamos o primeiro gesto para tentar registrar o dispositivo, caso
@@ -1296,7 +1580,10 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
         void playerRef.current?.setVolume(data.volume / 100).catch(() => {})
       }
 
-      const canAuto = spotifyConnected === true && canAutoPlayNow()
+      const canAuto =
+        spotifyConnected === true &&
+        canAutoPlayNow() &&
+        !fatalPlaybackRef.current
 
       if (data.currentTrack) {
         const current = data.currentTrack
@@ -1306,7 +1593,12 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
 
         if (changed) {
           applyTrack(current, data.isPlaying && canAuto)
-          if (data.isPlaying && !canAuto && spotifyConnected === true) {
+          if (
+            data.isPlaying &&
+            !canAuto &&
+            spotifyConnected === true &&
+            !fatalPlaybackRef.current
+          ) {
             // O servidor achava que estava tocando, mas este navegador não
             // pode iniciar áudio sem um gesto. Alinha o estado para a UI e a
             // fila não ficarem "tocando" sem som.
@@ -1328,14 +1620,18 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
                 .catch((err) => {
                   if (loadedUriRef.current !== uri) return
                   const info = toPlaybackErrorInfo(err, isMobileRef.current)
-                  if (info.needsActivation) setNeedsAudioActivation(true)
+                  if (info.needsActivation) {
+                    setNeedsAudioActivation(true)
+                  } else {
+                    markFatalPlayback(info.detail || info.message)
+                  }
                   setError(info.message)
                   setErrorDetail(info.detail)
                 })
             } else if (!deviceIdRef.current) {
               // Aguarda o evento `ready`; tentar agora geraria um 404 de
               // dispositivo inexistente no mobile.
-            } else if (spotifyConnected === true) {
+            } else if (spotifyConnected === true && !fatalPlaybackRef.current) {
               pauseServerForActivation()
               setNeedsAudioActivation(true)
             }
@@ -1359,6 +1655,7 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
         !data.currentTrack &&
         data.autoPlay &&
         data.hasPending &&
+        !fatalPlaybackRef.current &&
         !autoPlayInFlightRef.current &&
         Date.now() - lastAutoPlayAttemptRef.current > 5000
       ) {
@@ -1391,6 +1688,7 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
   }, [
     applyTrack,
     canAutoPlayNow,
+    markFatalPlayback,
     pauseServerForActivation,
     setNeedsAudioActivation,
     spotifyConnected,
@@ -1480,11 +1778,12 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
         return
       }
 
+      clearFatalPlayback()
       setError(null)
       setErrorDetail(null)
       lastUserPlayAtRef.current = Date.now()
       // Precisa ser síncrono, ainda dentro do gesto do usuário.
-      const activation = activateAudio()
+      const activation = activateAudio(true)
 
       try {
         const response = await apiMusic.play({ trackId: target.id })
@@ -1494,17 +1793,28 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
       } catch (err) {
         // A faixa atual pode continuar tocando; não force o ícone para pausado.
         const info = toPlaybackErrorInfo(err, isMobileRef.current)
-        if (info.needsActivation) setNeedsAudioActivation(true)
+        if (info.needsActivation) {
+          setNeedsAudioActivation(true)
+        } else {
+          markFatalPlayback(info.detail || info.message)
+        }
         setError(info.message)
         setErrorDetail(info.detail)
       }
     },
-    [activateAudio, applyTrack, setNeedsAudioActivation]
+    [
+      activateAudio,
+      applyTrack,
+      clearFatalPlayback,
+      markFatalPlayback,
+      setNeedsAudioActivation,
+    ]
   )
 
   const togglePlay = useCallback(async () => {
     // Também precisa ser síncrono: é o gesto que libera o áudio no iOS.
-    const activation = activateAudio()
+    const activation = activateAudio(true)
+    clearFatalPlayback()
     setError(null)
     setErrorDetail(null)
 
@@ -1573,16 +1883,18 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
   }, [
     activateAudio,
     applyTrack,
+    clearFatalPlayback,
     setNeedsAudioActivation,
     startUri,
     updatePlaying,
   ])
 
   const next = useCallback(async () => {
+    clearFatalPlayback()
     setError(null)
     setErrorDetail(null)
     lastUserPlayAtRef.current = Date.now()
-    void activateAudio()
+    void activateAudio(true)
 
     try {
       const response = await apiMusic.next()
@@ -1594,17 +1906,28 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
       }
     } catch (err) {
       const info = toPlaybackErrorInfo(err, isMobileRef.current)
-      if (info.needsActivation) setNeedsAudioActivation(true)
+      if (info.needsActivation) {
+        setNeedsAudioActivation(true)
+      } else {
+        markFatalPlayback(info.detail || info.message)
+      }
       setError(info.message)
       setErrorDetail(info.detail)
     }
-  }, [activateAudio, applyTrack, setNeedsAudioActivation])
+  }, [
+    activateAudio,
+    applyTrack,
+    clearFatalPlayback,
+    markFatalPlayback,
+    setNeedsAudioActivation,
+  ])
 
   const previous = useCallback(async () => {
+    clearFatalPlayback()
     setError(null)
     setErrorDetail(null)
     lastUserPlayAtRef.current = Date.now()
-    void activateAudio()
+    void activateAudio(true)
 
     try {
       const response = await apiQueue.previous()
@@ -1614,11 +1937,21 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
       }
     } catch (err) {
       const info = toPlaybackErrorInfo(err, isMobileRef.current)
-      if (info.needsActivation) setNeedsAudioActivation(true)
+      if (info.needsActivation) {
+        setNeedsAudioActivation(true)
+      } else {
+        markFatalPlayback(info.detail || info.message)
+      }
       setError(info.message)
       setErrorDetail(info.detail)
     }
-  }, [activateAudio, applyTrack, setNeedsAudioActivation])
+  }, [
+    activateAudio,
+    applyTrack,
+    clearFatalPlayback,
+    markFatalPlayback,
+    setNeedsAudioActivation,
+  ])
 
   const changeVolume = useCallback(
     (value: number) => {
@@ -1638,11 +1971,17 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
   )
 
   const reconnect = useCallback(async () => {
+    clearFatalPlayback()
     setError(null)
     setErrorDetail(null)
+    lastActivationErrorRef.current = null
+    // O usuário pode ter atualizado o Chrome/WebView ou mudado permissões de
+    // conteúdo protegido; refaz o probe em vez de reutilizar um resultado velho.
+    drmProbeRef.current = null
+    setDrmSummary(null)
     // O botão "Tentar novamente" é um gesto do usuário: aproveitamos para
     // liberar o áudio no mobile antes de sincronizar com o servidor.
-    const activation = activateAudio()
+    const activation = activateAudio(true)
     connectAttemptRef.current = 0
     clearReconnectTimer()
 
@@ -1670,8 +2009,223 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
     }
 
     await activation.catch(() => false)
+
+    // Se o DRM do aparelho realmente não cria MediaKeys, não adianta tentar
+    // tocar: mostra a causa e para os retries automáticos.
+    if (runtimeIsAndroid()) {
+      const drm = await getDrmProbe()
+      if (!drmWorks(drm)) {
+        setError(SPOTIFY_DRM_MESSAGE)
+        setErrorDetail(`DRM: ${drmProbeSummary(drm)}`)
+        setNeedsAudioActivation(false)
+        markFatalPlayback('drm_reconnect')
+        return
+      }
+    }
+
     await refreshRef.current()
-  }, [activateAudio, clearReconnectTimer, connectPlayer, spotifyConnected])
+  }, [
+    activateAudio,
+    clearFatalPlayback,
+    clearReconnectTimer,
+    connectPlayer,
+    getDrmProbe,
+    markFatalPlayback,
+    setNeedsAudioActivation,
+    spotifyConnected,
+  ])
+
+  /**
+   * Relatório técnico manual. Não roda no polling e não expõe tokens.
+   * Faz no máximo: 1 refresh de token, 1 status, 1 devices, 1 player atual.
+   */
+  const diagnose = useCallback(async (): Promise<string> => {
+    if (diagnosticsInFlightRef.current) return diagnosticsInFlightRef.current
+
+    const run = async (): Promise<string> => {
+      const userAgentData = (
+        navigator as Navigator & { userAgentData?: { mobile?: boolean } }
+      ).userAgentData
+
+      const report: Record<string, unknown> = {
+        build: 'pixtune-mobile-diagnostic-2026-11-10',
+        generatedAt: new Date().toISOString(),
+        browser: {
+          userAgent: navigator.userAgent,
+          platform: navigator.platform,
+          language: navigator.language,
+          online: navigator.onLine,
+          visibility: document.visibilityState,
+          secureContext: window.isSecureContext,
+          mobile: isMobileRef.current,
+          userAgentMobile: userAgentData?.mobile ?? null,
+          maxTouchPoints: navigator.maxTouchPoints,
+          coarsePointer:
+            typeof window.matchMedia === 'function'
+              ? window.matchMedia('(pointer: coarse)').matches
+              : null,
+          viewport: {
+            width: window.innerWidth,
+            height: window.innerHeight,
+            devicePixelRatio: window.devicePixelRatio,
+          },
+        },
+        player: {
+          sdkLoaded: Boolean(playerRef.current),
+          ready: isReady,
+          spotifyConnected,
+          deviceIdPrefix: deviceIdRef.current
+            ? deviceIdRef.current.slice(0, 8)
+            : null,
+          audioUnlocked: audioUnlockedRef.current,
+          needsActivation: needsActivationRef.current,
+          lastActivationError: lastActivationErrorRef.current,
+          error,
+          errorDetail,
+          accountError,
+          fatalPlayback: fatalPlaybackRef.current,
+          drmSummary,
+          track: trackRef.current
+            ? {
+                id: trackRef.current.id,
+                provider: trackRef.current.provider,
+                providerId: trackRef.current.providerId,
+                uri: loadedUriRef.current,
+              }
+            : null,
+          startedUri: startedUriRef.current,
+        },
+        drm: await getDrmProbe(),
+      }
+
+      try {
+        const status = await apiSpotify.status()
+        report.spotifyStatus = status.success
+          ? status.data
+          : { error: status.error }
+      } catch (error) {
+        report.spotifyStatusError = errorMessage(error)
+      }
+
+      try {
+        await fetchSpotifyToken(true)
+        report.tokenRefresh = 'ok'
+      } catch (error) {
+        report.tokenRefreshError = errorMessage(error)
+      }
+
+      try {
+        const response = await spotifyApiFetch('/me/player/devices')
+        if (response.ok) {
+          const body = (await response.json()) as {
+            devices?: Array<Record<string, unknown>>
+          }
+          report.devices = (body.devices || []).map((device) => ({
+            idPrefix:
+              typeof device.id === 'string' ? device.id.slice(0, 8) : null,
+            name: device.name ?? null,
+            type: device.type ?? null,
+            isActive: device.is_active ?? null,
+            isRestricted: device.is_restricted ?? null,
+            volumePercent: device.volume_percent ?? null,
+          }))
+        } else {
+          report.devicesError = `HTTP ${response.status}: ${(
+            await response.text().catch(() => '')
+          ).slice(0, 300)}`
+        }
+      } catch (error) {
+        report.devicesError = errorMessage(error)
+      }
+
+      try {
+        const response = await spotifyApiFetch('/me/player')
+        if (response.status === 204) {
+          report.currentPlayback = null
+        } else if (response.ok) {
+          const body = (await response.json()) as {
+            device?: Record<string, unknown> | null
+            is_playing?: boolean
+            progress_ms?: number
+            item?: Record<string, unknown> | null
+            actions?: unknown
+          }
+          report.currentPlayback = {
+            device: body.device
+              ? {
+                  idPrefix:
+                    typeof body.device.id === 'string'
+                      ? body.device.id.slice(0, 8)
+                      : null,
+                  name: body.device.name ?? null,
+                  type: body.device.type ?? null,
+                  isActive: body.device.is_active ?? null,
+                  isRestricted: body.device.is_restricted ?? null,
+                }
+              : null,
+            isPlaying: body.is_playing ?? null,
+            progressMs: body.progress_ms ?? null,
+            item: body.item
+              ? {
+                  type: body.item.type ?? null,
+                  id: body.item.id ?? null,
+                  uri: body.item.uri ?? null,
+                  name: body.item.name ?? null,
+                }
+              : null,
+            actions: body.actions ?? null,
+          }
+        } else {
+          report.currentPlaybackError = `HTTP ${response.status}: ${(
+            await response.text().catch(() => '')
+          ).slice(0, 300)}`
+        }
+      } catch (error) {
+        report.currentPlaybackError = errorMessage(error)
+      }
+
+      try {
+        const state = await playerRef.current?.getCurrentState()
+        report.localState = state
+          ? {
+              paused: state.paused,
+              position: state.position,
+              duration: state.duration,
+              uri: state.track_window?.current_track?.uri ?? null,
+            }
+          : null
+      } catch (error) {
+        report.localStateError = errorMessage(error)
+      }
+
+      report.audioElements = Array.from(document.querySelectorAll('audio')).map(
+        (audio) => ({
+          paused: audio.paused,
+          readyState: audio.readyState,
+          muted: audio.muted,
+          volume: audio.volume,
+          error: audio.error?.message ?? null,
+          srcPrefix: audio.src ? audio.src.slice(0, 80) : null,
+        })
+      )
+
+      return JSON.stringify(report, null, 2)
+    }
+
+    const promise = run().finally(() => {
+      diagnosticsInFlightRef.current = null
+    })
+    diagnosticsInFlightRef.current = promise
+    return promise
+  }, [
+    accountError,
+    drmSummary,
+    error,
+    errorDetail,
+    getDrmProbe,
+    isReady,
+    spotifyConnected,
+  ])
 
   useEffect(() => {
     return () => {
@@ -1702,6 +2256,7 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
         setVolume: changeVolume,
         refresh,
         reconnect,
+        diagnose,
       }}
     >
       {children}

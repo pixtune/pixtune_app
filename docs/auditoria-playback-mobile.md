@@ -1,6 +1,6 @@
 # Auditoria e correção do Playback Error no mobile
 
-Data: 2026-11-09  
+Data: 2026-11-09 (atualizado em 2026-11-10)  
 Escopo: reprodução de música via Spotify Web Playback SDK no PixTune, com foco em
 Android/iOS, sem regressão no desktop e sem alterar a integração Live Pix.
 
@@ -147,18 +147,67 @@ Também foi adicionado:
   `user-read-playback-state` ou `user-modify-playback-state` (conexões antigas
   precisam ser refeitas).
 
+### 9. Android Chrome + Firefox: DRM/EME e erro genérico “playback error”
+
+O erro continuou aparecendo depois do build novo, tanto no Chrome quanto no
+Firefox do mesmo Android, com plano Família e desktop funcionando. Isso reduz a
+hipótese de autoplay isolado e aumenta a suspeita de **DRM/EME/Widevine** no
+aparelho: o SDK entrega o áudio protegido, e quando o CDM não cria as chaves o
+erro chega como o texto literal `playback error`, sem detalhe.
+
+Para separar as causas sem mascarar o erro, foram adicionados:
+
+1. **Probe de DRM real** (`src/client/player/spotifyDiagnostics.ts`):
+   `navigator.requestMediaKeySystemAccess('com.widevine.alpha', ...)` e
+   `createMediaKeys()` para as configurações padrão, L3 (`SW_SECURE_CRYPTO`) e
+   L1 (`HW_SECURE_CRYPTO`), com timeout de 4 s por etapa. O resultado só é
+   considerado disponível quando ao menos uma configuração cria `MediaKeys`.
+2. **Pré-checagem no Android:** ao conectar, o app roda o probe uma vez. Se
+   nenhuma configuração criar `MediaKeys`, mostra a mensagem de DRM/Widevine e
+   para os retries automáticos; o detalhe técnico contém a saída crua do probe.
+   Em iOS/Safari e desktop o probe não bloqueia a reprodução, porque o key
+   system pode não ser Widevine; nesses casos ele só aparece no diagnóstico
+   manual.
+3. **Diagnóstico no evento:** `initialization_error` e `playback_error` anexam
+   a mensagem original do SDK e o resumo do probe ao painel “Detalhes técnicos”.
+   Se o probe funciona, o erro de autoplay continua sendo tratado como gesto; se
+   não funciona, a causa exibida é DRM.
+4. **`activateElement()` observável:** o erro do `activateElement()` não é mais
+   engolido; ele é guardado e aparece no diagnóstico como
+   `activateElement: <mensagem>`.
+5. **Tratamento explícito dos eventos:** `initialization_error`,
+   `authentication_error`, `account_error`, `playback_error`,
+   `autoplay_failed`, `ready` e `not_ready` registram a mensagem original
+   (quando existe) e atualizam o estado do device/reconexão.
+6. **Limite de chamadas:** o `PUT /me/player/play` faz no máximo 3 tentativas,
+   transfere o device no máximo uma vez e **não repete** 400 (URI/faixa
+   inválida), 401, 429, 403 de Premium/restrição/DRM/autoplay. Erros fatais
+   bloqueiam o polling de 4 s até um gesto explícito do usuário.
+7. **Validação da URI:** a faixa é validada com `extractSpotifyTrackId` antes de
+   chamar a API; IDs de episódio/URI inválida mostram “faixa não é uma música
+   válida” em vez de um `playback error` genérico.
+8. **Painel “Diagnóstico”:** botão no card de erro coleta, em uma execução
+   manual, status, refresh de token, devices, playback atual, estado local do
+   SDK, elementos `<audio>`, DRM e o erro/ativação. O relatório não inclui
+   tokens, Client Secret nem headers de autorização e pode ser copiado.
+
+O desktop mantém o caminho do SDK e não é bloqueado pelo probe. Nenhuma
+configuração externa, token ou integração Live Pix foi alterada.
+
 ## Arquivos alterados
 
 | Arquivo | Mudança |
 | --- | --- |
-| `src/client/player/playbackPolicy.ts` | Políticas puras de mobile/autoplay (inclui modo desktop do Android), backoff e tradução de erros. |
-| `src/client/player/playbackPolicy.test.ts` | 16 testes das políticas e classificadores. |
-| `src/client/player/SpotifyAudioPlayer.tsx` | Player reescrito: init única, ativação por gesto, `autoplay_failed`, reset de ativação, device/transfer, retry, token force, reconexão, guards de URI, detalhe técnico e mensagens. |
+| `src/client/player/playbackPolicy.ts` | Políticas puras de mobile/autoplay (inclui modo desktop do Android), backoff e tradução de erros, incluindo marcadores reais de Widevine/MediaDrm. |
+| `src/client/player/playbackPolicy.test.ts` | 19 testes das políticas e classificadores, incluindo DRM e o falso positivo “Element”/EME. |
+| `src/client/player/spotifyDiagnostics.ts` | Probe de EME/Widevine (padrão, L3, L1), resumo e veredito `drmWorks`. |
+| `src/client/player/spotifyDiagnostics.test.ts` | 7 testes do probe/resumo de DRM (sucesso, falha de `createMediaKeys` e rejeição do key system). |
+| `src/client/player/SpotifyAudioPlayer.tsx` | Player reescrito: init única, ativação por gesto, `autoplay_failed`, reset de ativação, device/transfer, retry limitado, token force, reconexão, guards de URI, eventos com mensagem original, probe de DRM e `diagnose()`. |
 | `src/client/api/client.ts` | `apiSpotify.token(force)` envia `force=1` na query e no corpo. |
 | `src/server/routes/spotify.ts` | `/token` lê `force` da query e do corpo. |
 | `src/server/services/spotify.ts` | `resolveCallbackUri` valida host e path; fallback seguro e logs. |
 | `src/server/services/spotify.test.ts` | Testes de `APP_URL`, host divergente e path divergente. |
-| `src/client/pages/dashboard/DashboardPage.tsx` | Card “Agora tocando” responsivo, loading, aviso de autoplay, erro com retry e “Detalhes técnicos”. |
+| `src/client/pages/dashboard/DashboardPage.tsx` | Card “Agora tocando” responsivo, loading, aviso de autoplay, erro com retry, “Detalhes técnicos” e painel “Diagnóstico” copiável. |
 | `src/client/layouts/AppLayout.tsx` | Indicador do player considera erro de conta e necessidade de ativação. |
 | `src/client/pages/dashboard/QueuePage.tsx` | Avisos de conta/ativação e retomada correta da faixa atual. |
 | `src/client/pages/dashboard/SpotifySettings.tsx` | Orientação sobre Premium mobile, toque em Play e aviso de escopos OAuth ausentes. |
@@ -181,8 +230,17 @@ nas dependências.
 
 ```text
 npm run typecheck   -> OK (client + server)
-npm test            -> 13 arquivos, 105 testes, todos passando
+npm test            -> 14 arquivos, 115 testes, todos passando
 npm run build       -> OK (Vite client + tsc server)
+```
+
+No Windows desta máquina o `npm test` com paralelismo padrão do Vitest pode
+encerrar com `0xC0000005` (access violation) durante a coleta dos workers. A
+execução sequencial abaixo passa todos os 115 testes e foi usada como
+verificação final:
+
+```text
+node node_modules/vitest/vitest.mjs run --no-file-parallelism
 ```
 
 O `npm run lint` não foi usado porque o projeto não possui arquivo de
@@ -197,7 +255,10 @@ configuração do ESLint (comportamento preexistente, não introduzido aqui).
 - `Playback Error` genérico do SDK tratado como autoplay no mobile;
 - backoff exponencial limitado;
 - classificação de autoplay, Premium, device, DRM, auth, restrição e rate limit;
-- prioridade de restrição sobre o prefixo genérico “Player command failed”;
+- erros reais de Widevine/MediaDrm (`No supported keysystem`, L1, `MediaDrmBridge`, `createSession`) classificados como DRM;
+- `Element was not activated` não é confundido com a sigla EME;
+- prioridade de DRM sobre “session”/“blocked” e de restrição sobre o prefixo genérico “Player command failed”;
+- probe de DRM: veredito com pelo menos uma configuração e resumo de falhas;
 - configuração de callbacks com `APP_URL`, host divergente e path divergente.
 
 ### O que não foi possível testar aqui
@@ -316,8 +377,29 @@ teste.
 - [ ] Bloquear/desbloquear a tela e voltar ao navegador: player reconecta.
 - [ ] Alternar Wi-Fi/4G: player reconecta ou mostra “Tentar novamente”.
 - [ ] Conta sem Premium mostra a mensagem específica, sem loop.
+- [ ] Em `chrome://components`, confirmar que `Widevine Content Decryption Module`
+      está instalado/atualizado (não “0.0.0.0”).
+- [ ] Em `chrome://settings/content/protectedContent`, confirmar que conteúdo
+      protegido está permitido.
+- [ ] Abrir `https://open.spotify.com` no **mesmo** Chrome e tentar tocar uma
+      música. Se o Spotify oficial também falhar, o problema é DRM/navegador do
+      aparelho; se tocar, o problema está na integração PixTune.
+- [ ] Se aparecer a mensagem de DRM/Widevine, tocar em **Diagnóstico** e copiar o
+      relatório (sem tokens) para confirmar `requestMediaKeySystemAccess`/
+      `createMediaKeys`.
 - [ ] Se o erro persistir, abrir **Detalhes técnicos** no card de erro e enviar o
       texto cru (sem tokens) para identificar a causa exata.
+
+### Android (Firefox)
+
+- [ ] Repetir o fluxo do Chrome no Firefox Android, incluindo o teste em
+      `https://open.spotify.com`.
+- [ ] Em `about:config`, confirmar que `media.eme.enabled` está `true` e que
+      `media.gmp-widevinecdm.enabled` não foi desativado.
+- [ ] Se o Spotify oficial tocar no Firefox mas o PixTune não, enviar o painel
+      **Diagnóstico** para comparar o `deviceId`/URI/erro do SDK.
+- [ ] Se ambos falharem, testar outro aparelho Android; o CDM/DRM do aparelho é
+      a causa mais provável.
 
 ### iOS (Safari)
 

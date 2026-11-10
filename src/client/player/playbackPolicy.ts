@@ -162,16 +162,33 @@ export function isBrowserDrmReason(message?: string | null): boolean {
 
   return [
     'encrypted media',
+    'encrypted-media',
+    'encrypted media extensions',
+    'emeerror',
+    'eme error',
     'widevine',
     'drm',
+    'cdm',
     'protected content',
+    'protected media',
     'playback of protected',
     'browser not supported',
     'unsupported browser',
     'media key',
-    'failed to initialize',
-    'initialize player',
-    'player initialization',
+    'media keys',
+    'mediadrm',
+    'keysystem',
+    'key system',
+    'security level',
+    'sw_secure_crypto',
+    'hw_secure_crypto',
+    'l1 security',
+    'l3 security',
+    'not provisioned',
+    'failed to create',
+    'create media keys',
+    'decrypt',
+    'cannot handle',
   ].some((marker) => text.includes(marker))
 }
 
@@ -227,7 +244,13 @@ export const SPOTIFY_AUTOPLAY_MESSAGE =
   'O navegador bloqueou a reprodução automática. Clique em Play para iniciar o áudio.'
 
 export const SPOTIFY_DRM_MESSAGE =
-  'Este navegador não conseguiu abrir o áudio protegido do Spotify. Atualize o Chrome ou o Safari e desative bloqueadores de conteúdo para este site.'
+  'Este navegador/aparelho não conseguiu abrir o áudio protegido (DRM/Widevine) do Spotify. Atualize o Chrome/Firefox e o Android System WebView, permita conteúdo protegido para este site e tente novamente. Se persistir, ouça pelo app Spotify.'
+
+export const SPOTIFY_INIT_MESSAGE =
+  'Não foi possível inicializar o player do Spotify neste navegador. Atualize o navegador, permita conteúdo protegido para este site e tente novamente.'
+
+export const SPOTIFY_TRACK_INVALID_MESSAGE =
+  'Esta faixa não é uma música válida do Spotify. Peça outra música ou reconecte a conta em Configurações > Spotify.'
 
 export const SPOTIFY_AUTH_MESSAGE =
   'Sua sessão do Spotify expirou. Reconecte a conta em Configurações > Spotify.'
@@ -259,18 +282,20 @@ export function playbackErrorMessage(
   const text = normalizeReason(message)
 
   if (isPremiumReason(text)) return SPOTIFY_PREMIUM_MESSAGE
+  if (isRateLimitReason(text)) return SPOTIFY_RATE_LIMIT_MESSAGE
+  // DRM antes de auth/autoplay: erros de EME podem conter "session"
+  // (createSession) e "blocked" (protected content is blocked).
+  if (isBrowserDrmReason(text)) return SPOTIFY_DRM_MESSAGE
+  if (isAuthReason(text)) return SPOTIFY_AUTH_MESSAGE
+  // Restrição antes de dispositivo: a API usa "Player command failed:
+  // Restriction violated", que também casa com o prefixo genérico de device.
+  if (isRestrictionReason(text)) return SPOTIFY_RESTRICTION_MESSAGE
   if (context.mobile && isAmbiguousSdkPlaybackError(text)) {
     return SPOTIFY_MOBILE_AUTOPLAY_MESSAGE
   }
   if (isAutoplayBlockedReason(text)) {
     return context.mobile ? SPOTIFY_MOBILE_AUTOPLAY_MESSAGE : SPOTIFY_AUTOPLAY_MESSAGE
   }
-  if (isBrowserDrmReason(text)) return SPOTIFY_DRM_MESSAGE
-  if (isAuthReason(text)) return SPOTIFY_AUTH_MESSAGE
-  if (isRateLimitReason(text)) return SPOTIFY_RATE_LIMIT_MESSAGE
-  // Restrição antes de dispositivo: a API usa "Player command failed:
-  // Restriction violated", que também casa com o prefixo genérico de device.
-  if (isRestrictionReason(text)) return SPOTIFY_RESTRICTION_MESSAGE
   if (isDeviceReason(text)) return SPOTIFY_DEVICE_MESSAGE
 
   return SPOTIFY_GENERIC_MESSAGE

@@ -150,3 +150,47 @@ describe('classificação de erros do Spotify', () => {
     expect(playbackErrorMessage('')).toContain('Não foi possível reproduzir')
   })
 })
+
+describe('DRM/EME no Android', () => {
+  it('reconhece os erros reais de Widevine/MediaDrm', () => {
+    expect(
+      isBrowserDrmReason('EMEError: No supported keysystem was found')
+    ).toBe(true)
+    expect(isBrowserDrmReason('Unable to set L1 security level')).toBe(true)
+    expect(isBrowserDrmReason('MediaDrmBridge creation failed')).toBe(true)
+    expect(
+      isBrowserDrmReason(
+        'Device not provisioned during createSession()'
+      )
+    ).toBe(true)
+    expect(isBrowserDrmReason('playback of protected content is blocked')).toBe(
+      true
+    )
+    expect(isBrowserDrmReason('Element was not activated')).toBe(false)
+  })
+
+  it('não confunde "Element" com a sigla EME', () => {
+    expect(isBrowserDrmReason('Element was not activated')).toBe(false)
+    expect(
+      playbackErrorMessage('Element was not activated', { mobile: true })
+    ).toBe(SPOTIFY_MOBILE_AUTOPLAY_MESSAGE)
+  })
+
+  it('traduz erro de DRM para a orientação de conteúdo protegido', () => {
+    expect(
+      playbackErrorMessage('EMEError: No supported keysystem was found')
+    ).toBe(SPOTIFY_DRM_MESSAGE)
+    expect(playbackErrorMessage('Unable to set L1 security level')).toBe(
+      SPOTIFY_DRM_MESSAGE
+    )
+    expect(playbackErrorMessage('MediaDrmBridge creation failed')).toBe(
+      SPOTIFY_DRM_MESSAGE
+    )
+    expect(
+      playbackErrorMessage('Device not provisioned during createSession()')
+    ).toBe(SPOTIFY_DRM_MESSAGE)
+    expect(playbackErrorMessage('protected content is blocked')).toBe(
+      SPOTIFY_DRM_MESSAGE
+    )
+  })
+})

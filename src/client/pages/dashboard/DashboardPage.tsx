@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { Music, Play, Pause, SkipForward, SkipBack, TrendingUp, Clock, Zap, ExternalLink, Trophy, AlertCircle, Loader2, RefreshCw } from 'lucide-react'
+import { Music, Play, Pause, SkipForward, SkipBack, TrendingUp, Clock, Zap, ExternalLink, Trophy, AlertCircle, Loader2, RefreshCw, Activity, Copy, Check } from 'lucide-react'
 import { Button } from '@client/components/ui/Button'
 import { Card } from '@client/components/ui/Card'
 import { Badge } from '@client/components/ui/Badge'
@@ -26,6 +26,7 @@ export function DashboardPage() {
     needsAudioActivation,
     isMobile,
     togglePlay,
+    diagnose,
     next: playNext,
     previous: playPrevious,
     setVolume,
@@ -106,6 +107,7 @@ export function DashboardPage() {
             onNext={playNext}
             onVolumeChange={handleVolumeChange}
             onReconnect={reconnect}
+            onDiagnose={diagnose}
           />
           <QueueControlsCard onClear={handleClearQueue} />
         </div>
@@ -172,6 +174,7 @@ function NowPlayingCard({
   onNext,
   onVolumeChange,
   onReconnect,
+  onDiagnose,
 }: {
   track: any
   isPlaying: boolean
@@ -190,8 +193,36 @@ function NowPlayingCard({
   onNext: () => void
   onVolumeChange: (v: number) => void
   onReconnect: () => void | Promise<void>
+  onDiagnose: () => Promise<string>
 }) {
   const navigate = useNavigate()
+  const [diagnostic, setDiagnostic] = useState<string | null>(null)
+  const [diagnosticLoading, setDiagnosticLoading] = useState(false)
+  const [diagnosticError, setDiagnosticError] = useState<string | null>(null)
+  const [diagnosticCopied, setDiagnosticCopied] = useState(false)
+
+  async function runDiagnostic() {
+    setDiagnosticLoading(true)
+    setDiagnosticError(null)
+    try {
+      setDiagnostic(await onDiagnose())
+    } catch (err) {
+      setDiagnosticError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setDiagnosticLoading(false)
+    }
+  }
+
+  async function copyDiagnostic() {
+    if (!diagnostic) return
+    try {
+      await navigator.clipboard.writeText(diagnostic)
+      setDiagnosticCopied(true)
+      window.setTimeout(() => setDiagnosticCopied(false), 2500)
+    } catch {
+      window.prompt('Copie o diagnóstico abaixo:', diagnostic)
+    }
+  }
   const totalMs = durationMs || track?.durationMs || 0
   const progress = totalMs > 0 ? Math.min(100, (positionMs / totalMs) * 100) : 0
   const playable = track?.provider === 'spotify' && Boolean(track?.providerId)
@@ -334,30 +365,73 @@ function NowPlayingCard({
                   <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" />
                   <span>{visibleError}</span>
                 </p>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="mt-2"
-                  onClick={() => {
-                    // Se o player já está pronto e a falha foi no play, repetir
-                    // o play é o que o usuário espera. Erros de conexão/conta
-                    // continuam usando o reconnect.
-                    if (!accountError && playable && isReady && !isPlaying) {
-                      void onTogglePlay()
-                      return
-                    }
-                    void onReconnect()
-                  }}
-                >
-                  <RefreshCw className="mr-2 h-4 w-4" /> Tentar novamente
-                </Button>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      // Se o player já está pronto e a falha foi no play, repetir
+                      // o play é o que o usuário espera. Erros de conexão/conta
+                      // continuam usando o reconnect.
+                      if (!accountError && playable && isReady && !isPlaying) {
+                        void onTogglePlay()
+                        return
+                      }
+                      void onReconnect()
+                    }}
+                  >
+                    <RefreshCw className="mr-2 h-4 w-4" /> Tentar novamente
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => void runDiagnostic()}
+                    disabled={diagnosticLoading}
+                  >
+                    {diagnosticLoading ? (
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    ) : (
+                      <Activity className="mr-2 h-4 w-4" />
+                    )}
+                    {diagnosticLoading ? 'Coletando...' : 'Diagnóstico'}
+                  </Button>
+                </div>
                 {errorDetail && (
                   <details className="mt-2 text-caption text-pixtune-textMuted">
                     <summary className="cursor-pointer select-none">Detalhes técnicos</summary>
-                    <p className="mt-1 break-words rounded bg-pixtune-bg/60 p-2 font-mono text-[11px] leading-relaxed">
+                    <p className="mt-1 whitespace-pre-wrap break-words rounded bg-pixtune-bg/60 p-2 font-mono text-[11px] leading-relaxed">
                       {errorDetail}
                     </p>
                   </details>
+                )}
+                {diagnosticError && (
+                  <p className="mt-2 rounded bg-pixtune-bg/60 p-2 font-mono text-[11px] text-pixtune-danger">
+                    {diagnosticError}
+                  </p>
+                )}
+                {diagnostic && (
+                  <div className="mt-3">
+                    <div className="mb-1 flex items-center justify-between gap-2">
+                      <span className="text-caption font-medium text-pixtune-textSecondary">
+                        Diagnóstico completo (sem tokens)
+                      </span>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => void copyDiagnostic()}
+                      >
+                        {diagnosticCopied ? (
+                          <Check className="mr-2 h-4 w-4" />
+                        ) : (
+                          <Copy className="mr-2 h-4 w-4" />
+                        )}
+                        {diagnosticCopied ? 'Copiado' : 'Copiar'}
+                      </Button>
+                    </div>
+                    <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded bg-pixtune-bg/70 p-2 font-mono text-[10px] leading-relaxed text-pixtune-textMuted">
+                      {diagnostic}
+                    </pre>
+                  </div>
                 )}
               </div>
             )}
