@@ -12,6 +12,7 @@ import {
   LogOut,
   User,
   ChevronLeft,
+  Menu,
   AlertCircle,
   CheckCircle2,
   CircleOff,
@@ -93,10 +94,11 @@ function DashboardContent({ children }: { children: React.ReactNode }) {
           <button
             onClick={() => setSidebarOpen(!sidebarOpen)}
             className={cn(
-              'p-1.5 rounded-lg text-pixtune-textSecondary hover:text-pixtune-text hover:bg-pixtune-surfaceElevated transition-colors lg:hidden',
-              sidebarOpen && 'rotate-180'
+              'p-1.5 rounded-lg text-pixtune-textSecondary hover:text-pixtune-text hover:bg-pixtune-surfaceElevated transition-all flex items-center justify-center',
+              !sidebarOpen && 'rotate-180'
             )}
-            aria-label={sidebarOpen ? 'Recolher menu' : 'Expandir menu'}
+            title={sidebarOpen ? 'Recolher menu lateral' : 'Expandir menu lateral'}
+            aria-label={sidebarOpen ? 'Recolher menu lateral' : 'Expandir menu lateral'}
           >
             <ChevronLeft className="w-5 h-5" />
           </button>
@@ -228,19 +230,27 @@ function DashboardContent({ children }: { children: React.ReactNode }) {
       </aside>
 
       {/* Main content */}
-      <div className="flex-1 flex flex-col min-w-0 pb-16 lg:pb-0">
+      <div className="flex-1 flex flex-col min-w-0 pb-20 lg:pb-0 overflow-x-hidden">
         {/* Top bar responsiva idêntica ao design da Página 1 e 4 */}
-        <header className="sticky top-0 z-30 flex h-16 items-center justify-between border-b border-pixtune-border/80 bg-[#070F14]/90 px-4 sm:px-6 backdrop-blur-xl">
+        <header className="sticky top-0 z-30 flex h-14 sm:h-16 items-center justify-between border-b border-pixtune-border/80 bg-[#070F14]/90 px-3 sm:px-6 backdrop-blur-xl">
           {/* Lado Esquerdo */}
           <div className="flex items-center gap-3 min-w-0">
-            {/* Mobile: Status ao vivo OBS */}
+            {/* Mobile: Menu toggle + Status ao vivo OBS */}
             <div className="lg:hidden flex items-center gap-2">
-              <span className="relative flex h-2 w-2">
+              <button
+                type="button"
+                onClick={() => setMobileMenuOpen(true)}
+                className="p-1.5 -ml-1 rounded-lg text-pixtune-textSecondary hover:text-white hover:bg-pixtune-surfaceElevated transition-colors"
+                aria-label="Abrir menu lateral"
+              >
+                <Menu className="w-5 h-5" />
+              </button>
+              <span className="relative flex h-2 w-2 flex-shrink-0">
                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#1ED760] opacity-75"></span>
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-[#1ED760]"></span>
               </span>
-              <span className="text-caption font-semibold text-white truncate">
-                Ao vivo: OBS Conectado
+              <span className="text-caption font-semibold text-white truncate max-w-[130px] sm:max-w-[200px]">
+                OBS Conectado
               </span>
             </div>
 
@@ -310,7 +320,7 @@ function DashboardContent({ children }: { children: React.ReactNode }) {
         </header>
 
         {/* Page content */}
-        <main className="flex-1 p-4 sm:p-6 lg:p-8 overflow-y-auto">
+        <main className="flex-1 p-3 sm:p-4 lg:p-6 overflow-y-auto overflow-x-hidden">
           {children}
         </main>
       </div>
