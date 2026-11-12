@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useRouter } from 'next/navigation'
 import {
   apiAuth,
   isNetworkError,
@@ -17,6 +17,7 @@ interface AuthContextType {
   isConnecting: boolean
   authError: string | null
   spotifyLogin: () => void
+  demoLogin: () => Promise<void>
   logout: () => Promise<void>
 }
 
@@ -27,7 +28,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [isLoading, setIsLoading] = useState(true)
   const [isConnecting, setIsConnecting] = useState(false)
   const [authError, setAuthError] = useState<string | null>(null)
-  const navigate = useNavigate()
+  const router = useRouter()
 
   // Verificar sessão existente ao montar.
   useEffect(() => {
@@ -51,13 +52,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             if (typeof localStorage !== 'undefined') {
               localStorage.removeItem('pixtune_token')
             }
-          } else if (isNetworkError(err)) {
-            setAuthError(
-              'Não foi possível falar com a API. Verifique VITE_API_URL, CORS e se a API está online.'
-            )
-          } else if (err instanceof Error && (err as ApiError).status && (err as ApiError).status! >= 500) {
-            setAuthError('A API respondeu com erro interno. Tente novamente em alguns instantes.')
           }
+          // A verificação inicial passiva de sessão nunca deve exibir erros na tela de login
+          // O usuário simplesmente começa deslogado e o erro só aparece se ele tentar logar e falhar.
         }
       } finally {
         if (!cancelled) {
@@ -96,6 +93,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [isConnecting])
 
+  const demoLogin = useCallback(async () => {
+    if (isConnecting) return
+    setAuthError(null)
+    setIsConnecting(true)
+    try {
+      const res = await apiAuth.demoLogin()
+      if (res.success && res.data?.user) {
+        setUser(res.data.user)
+        if (res.data.token && typeof localStorage !== 'undefined') {
+          localStorage.setItem('pixtune_token', res.data.token)
+        }
+        router.push('/dashboard')
+        return
+      }
+      setAuthError(res.error?.message || 'Não foi possível entrar no modo teste.')
+    } catch (err) {
+      setAuthError(err instanceof Error ? err.message : 'Erro ao entrar no modo de teste.')
+    } finally {
+      setIsConnecting(false)
+    }
+  }, [isConnecting, router])
+
   const logout = useCallback(async () => {
     try {
       await apiAuth.logout()
@@ -105,8 +124,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.removeItem('pixtune_token')
     setUser(null)
     setAuthError(null)
-    navigate('/login', { replace: true })
-  }, [navigate])
+    router.replace('/login')
+  }, [router])
 
   return (
     <AuthContext.Provider value={{
@@ -116,6 +135,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       isConnecting,
       authError,
       spotifyLogin,
+      demoLogin,
       logout,
     }}>
       {children}

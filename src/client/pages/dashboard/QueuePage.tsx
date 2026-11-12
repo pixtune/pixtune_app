@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Link } from 'react-router-dom'
+import Link from 'next/link'
 import {
   ListMusic,
   Play,
@@ -49,6 +49,14 @@ export function QueuePage() {
 
   useEffect(() => {
     loadQueue()
+
+    const handleQueueUpdate = () => {
+      void loadQueue()
+    }
+    window.addEventListener('pixtune:queue-updated', handleQueueUpdate)
+    return () => {
+      window.removeEventListener('pixtune:queue-updated', handleQueueUpdate)
+    }
   }, [])
 
   async function loadQueue() {
@@ -226,7 +234,7 @@ export function QueuePage() {
 
   return (
     <div className="space-y-8">
-      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 sm:gap-6">
         <div>
           <h1 className="text-heading-lg font-bold text-pixtune-text md:text-page-title">Fila de Reprodução</h1>
           <p className="text-body-sm text-pixtune-textSecondary">
@@ -234,11 +242,20 @@ export function QueuePage() {
             valor é imutável; você só define o valor mínimo nas configurações.
           </p>
         </div>
-        <Link to="/dashboard" className="w-fit flex-shrink-0">
-          <Button variant="ghost" className="whitespace-nowrap">
-            <ArrowLeft className="w-4 h-4 mr-2" /> Voltar ao dashboard
+        <div className="flex items-center gap-3 flex-wrap">
+          <Button
+            variant="primary"
+            onClick={() => window.dispatchEvent(new CustomEvent('pixtune:open-spotify-modal'))}
+            className="gap-2 font-semibold shadow-md shadow-pixtune-primary/20"
+          >
+            <ListMusic className="w-4 h-4" /> Minhas Playlists Spotify
           </Button>
-        </Link>
+          <Link href="/dashboard" className="w-fit flex-shrink-0">
+            <Button variant="ghost" className="whitespace-nowrap">
+              <ArrowLeft className="w-4 h-4 mr-2" /> Voltar ao dashboard
+            </Button>
+          </Link>
+        </div>
       </div>
 
       <div className="flex items-start gap-3 rounded-lg border border-pixtune-primary/30 bg-pixtune-primary/5 p-4">
@@ -343,19 +360,22 @@ export function QueuePage() {
         )}
       </Card>
 
-      {(playerError || accountError) && (
-        <div className="flex items-start gap-2 p-4 rounded-lg border border-pixtune-danger/40 bg-pixtune-danger/10 text-body-sm text-pixtune-danger" role="alert">
-          <AlertCircle className="w-5 h-5 flex-shrink-0" />
-          <span>{playerError || accountError}</span>
+      {needsAudioActivation && !isPlaying && (
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-3 p-4 rounded-xl border border-pixtune-primary/40 bg-pixtune-primary/10 text-body-sm text-pixtune-text shadow-sm" role="status">
+          <div className="flex items-center gap-2.5">
+            <Play className="w-5 h-5 text-pixtune-primary flex-shrink-0 fill-current" />
+            <span>O áudio foi pausado pelo navegador móvel. Toque para liberar o som deste aparelho.</span>
+          </div>
+          <Button variant="primary" size="sm" onClick={() => void togglePlay()} className="gap-1.5 w-full sm:w-auto font-bold">
+            <Play className="w-4 h-4 fill-current" /> Liberar Som Agora
+          </Button>
         </div>
       )}
 
-      {needsAudioActivation && !isPlaying && (
-        <div className="flex items-start gap-2 p-4 rounded-lg border border-pixtune-warning/40 bg-pixtune-warning/10 text-body-sm text-pixtune-warning" role="status">
+      {playerError && !needsAudioActivation && !/bloqueou o áudio/i.test(playerError) && (
+        <div className="flex items-start gap-2 p-4 rounded-lg border border-pixtune-danger/40 bg-pixtune-danger/10 text-body-sm text-pixtune-danger" role="alert">
           <AlertCircle className="w-5 h-5 flex-shrink-0" />
-          <span>
-            O navegador bloqueou o áudio. Toque no botão <strong>Play</strong> de uma música para liberar o som neste dispositivo.
-          </span>
+          <span>{playerError || accountError}</span>
         </div>
       )}
 
@@ -376,10 +396,21 @@ export function QueuePage() {
           )}
         </div>
         {queue.length === 0 ? (
-          <div className="p-8 text-center">
-            <ListMusic className="w-12 h-12 text-pixtune-textMuted mx-auto mb-4" />
-            <p className="text-pixtune-textSecondary">A fila está vazia</p>
-            <p className="text-caption text-pixtune-textMuted mt-2">As doações com nome de música caem aqui automaticamente. Você também pode buscar faixas ou colar links do Spotify acima.</p>
+          <div className="p-8 text-center space-y-4">
+            <ListMusic className="w-12 h-12 text-pixtune-primary/60 mx-auto" />
+            <div>
+              <p className="text-body font-semibold text-pixtune-text">A fila está vazia</p>
+              <p className="text-caption text-pixtune-textMuted mt-1 max-w-md mx-auto">
+                As doações com nome de música entram aqui automaticamente. Que tal adicionar uma playlist do seu Spotify para tocar de fundo na live?
+              </p>
+            </div>
+            <Button
+              variant="primary"
+              className="gap-2 mx-auto font-semibold shadow-md"
+              onClick={() => window.dispatchEvent(new CustomEvent('pixtune:open-spotify-modal'))}
+            >
+              <ListMusic className="w-4 h-4" /> Importar Playlist do Spotify
+            </Button>
           </div>
         ) : (
           <div className="divide-y divide-pixtune-border">

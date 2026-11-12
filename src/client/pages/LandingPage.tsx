@@ -1,4 +1,4 @@
-import { Link } from 'react-router-dom'
+import Link from 'next/link'
 import { Music, Zap, Play, ArrowRight, ShieldCheck, Users, Clock, Layers } from 'lucide-react'
 import { Button } from '@client/components/ui/Button'
 import { Card } from '@client/components/ui/Card'
@@ -22,12 +22,12 @@ export function LandingPage() {
                 música são ignoradas — <span className="text-pixtune-text">sem URLs fixas e sem trabalho manual.</span>
               </p>
               <div className="flex flex-col sm:flex-row gap-4">
-                <Link to="/login">
+                <Link href="/login">
                   <Button variant="primary" size="lg" className="w-full sm:w-auto">
                     <Play className="w-5 h-5 mr-2" /> Entrar com Spotify
                   </Button>
                 </Link>
-                <Link to="/#como-funciona">
+                <Link href="/#como-funciona">
                   <Button variant="secondary" size="lg" className="w-full sm:w-auto">
                     Como funciona
                   </Button>
@@ -165,7 +165,7 @@ export function LandingPage() {
               Comece gratuitamente, sem cartão de crédito. Crie sua conta, configure o valor mínimo e conecte o Live Pix quando estiver pronto.
             </p>
             <div className="flex flex-col sm:flex-row gap-4 justify-center">
-              <Link to="/login">
+              <Link href="/login">
                 <Button variant="primary" size="lg">
                   <ArrowRight className="w-5 h-5 mr-2" /> Acessar painel
                 </Button>

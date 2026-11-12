@@ -40,11 +40,12 @@ A detecção é heurística. Ela foi feita para ser previsível e conservadora, 
 
 | Camada | Tecnologia |
 |--------|------------|
-| Frontend | React 18 + TypeScript + Vite + Tailwind CSS |
-| Estado | Context API |
-| Roteamento | React Router 6 |
-| Backend | Hono (Node.js puro) |
-| Banco | PostgreSQL via Prisma ORM |
+| Arquitetura | Next.js 14 (App Router) Fullstack Unificado |
+| Frontend | React 18 + TypeScript + Tailwind CSS |
+| Estado | Context API + Zustand |
+| Roteamento | Next.js App Router |
+| Backend | Hono integrado via Route Handler Next.js (`src/app/api`) |
+| Banco | PostgreSQL / SQLite via Prisma ORM |
 | Autenticação | Spotify OAuth 2.0 (JWT + sessões no banco) |
 | Validação | Zod |
 | Detecção musical | Spotify Web API (Search) |
@@ -172,26 +173,15 @@ PostgreSQL. Nenhuma credencial real vem preenchida no repositório.
 
 ### Publicação: GitHub → Render (API) → Cloudflare Pages (frontend)
 
-O frontend é estático (`dist/client`) e é publicado no **Cloudflare Pages**. A API
-(Hono + Prisma/PostgreSQL + webhooks do Live Pix) roda no **Render** como Web Service Node.
+Com a arquitetura unificada Next.js 14, o frontend e a API rodam no mesmo serviço, sob a mesma origem, eliminando qualquer problema de cookies em navegadores rígidos (Safari, Brave).
 
-1. **GitHub:** envie o código para o repositório conectado ao Render e ao Cloudflare Pages.
-2. **Render (API):**
-   - Use o Blueprint `render.yaml` ou crie um **Web Service** com runtime Node.
-   - Build Command: `npm ci --include=dev && npx prisma generate && npx prisma migrate deploy && npm run build:server`
+1. **GitHub:** envie o código para o seu repositório conectado à sua plataforma de hospedagem (Render, Vercel ou VPS).
+2. **Deploy Unificado (Render / Vercel / VPS):**
+   - Use o Blueprint `render.yaml` ou configure um Web Service com runtime Node.
+   - Build Command: `npm ci --include=dev && npx prisma generate && npx prisma migrate deploy && npm run build`
    - Start Command: `npm start`
-   - Health Check Path: `/health`
-   - Configure as variáveis listadas em [`docs/database-migration.md`](docs/database-migration.md).
-   - `API_URL` deve ser a origem da API **sem `/api`**.
-   - As Redirect URIs do Spotify apontam para o domínio público do Pages, não
-     diretamente para o Render (ver abaixo).
-3. **Cloudflare Pages (frontend + proxy /api):**
-   - Build Command: `npm run build:client`
-   - Output directory: `dist/client`
-   - O diretório `functions/` é publicado pelo Pages e faz proxy same-origin de
-     `/api/*` para o Render. Opcionalmente defina `API_ORIGIN` nas variáveis do
-     Pages; o padrão é `https://pixtune-app.onrender.com`.
-   - **Não** configure `VITE_API_URL` apontando para `onrender.com`. Deixe vazio
+   - Health Check Path: `/api/health`
+   - Configure as variáveis de ambiente necessárias (DATABASE_URL, JWT_SECRET, SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET).
      (o cliente usa a mesma origem da página) ou use a origem pública do Pages.
      Se a variável apontar para outra origem, o cliente a ignora e usa `/api`
      same-origin, justamente para não reintroduzir o bloqueio de cookies no

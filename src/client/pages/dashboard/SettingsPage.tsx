@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
+import Link from 'next/link'
+import { useSearchParams } from 'next/navigation'
 import { Zap, Music, ListMusic, Shield, Palette, User, LogOut, AlertCircle, Contrast, Accessibility, RefreshCw, Unplug, CheckCircle2, LayoutDashboard } from 'lucide-react'
 import { Button } from '@client/components/ui/Button'
 import { Card } from '@client/components/ui/Card'
@@ -47,7 +48,7 @@ async function copyToClipboard(text: string): Promise<boolean> {
 }
 
 export function SettingsPage() {
-  const [searchParams] = useSearchParams()
+  const searchParams = useSearchParams()
   const [section, setSection] = useState<SettingsSection>(() => {
     const requested = searchParams.get('section')
     return SETTINGS_SECTIONS.includes(requested as SettingsSection)
@@ -218,7 +219,7 @@ export function SettingsPage() {
             Gerencie suas preferências de conta e integrações.
           </p>
         </div>
-        <Link to="/dashboard" className="w-fit flex-shrink-0">
+        <Link href="/dashboard" className="w-fit flex-shrink-0">
           <Button variant="ghost" className="whitespace-nowrap">
             <LayoutDashboard className="w-4 h-4 mr-2" /> Voltar ao dashboard
           </Button>
@@ -753,7 +754,7 @@ function MusicSettings({
             </p>
             <p className="mt-2 text-caption text-pixtune-textMuted">
               O streamer define apenas o valor mínimo inicial na página{' '}
-              <Link to="/rules" className="text-pixtune-primary hover:underline">
+              <Link href="/rules" className="text-pixtune-primary hover:underline">
                 Regras
               </Link>
               . O valor de cada doação é fixo e imutável; não é possível reordenar ou aumentar a
@@ -765,7 +766,7 @@ function MusicSettings({
             A detecção usa a busca oficial do Spotify. A prioridade por valor é a única regra de
             reprodução: não há palavras-chave, links fixos, ações de comando ou ordenação manual.
             O valor mínimo inicial é definido na página{' '}
-            <Link to="/rules" className="text-pixtune-primary hover:underline">
+            <Link href="/rules" className="text-pixtune-primary hover:underline">
               Regras
             </Link>
             .

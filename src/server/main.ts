@@ -80,7 +80,7 @@ const server = createServer(async (req, res) => {
     const request = new Request(`http://localhost:${port}${url.pathname}${search}`, {
       method,
       headers,
-      body,
+      body: body as unknown as BodyInit | undefined,
     })
 
     const response = await app.fetch(request)

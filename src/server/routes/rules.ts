@@ -3,39 +3,96 @@ import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
 import { authMiddleware, getUserId } from '../middleware/auth.js'
 import prisma from '../lib/prisma.js'
+import { DEMO_USER } from '../services/auth.js'
 
 const rules = new Hono()
+
+const DEMO_RULES = [
+  {
+    id: 'demo-rule-1',
+    name: 'Pedido de Música Padrão',
+    description: 'Doações a partir de R$ 5,00 entram na fila e tocam por ordem de valor.',
+    minAmount: 500,
+    maxAmount: null,
+    keywords: [],
+    action: 'add_to_queue',
+    actionData: {},
+    cooldownMs: 10000,
+    maxPerHour: null,
+    isActive: true,
+    priority: 1,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  },
+  {
+    id: 'demo-rule-2',
+    name: 'Super Doação VIP',
+    description: 'Doações a partir de R$ 20,00 furam a fila e assumem a frente imediatamente.',
+    minAmount: 2000,
+    maxAmount: null,
+    keywords: ['vip', 'urgente'],
+    action: 'play_next',
+    actionData: {},
+    cooldownMs: 30000,
+    maxPerHour: null,
+    isActive: true,
+    priority: 10,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  },
+]
 
 // Listar regras do usuário
 rules.get('/', authMiddleware, async (c) => {
   const userId = getUserId(c)
-  const userRules = await prisma.donationRule.findMany({
-    where: { userId },
-    orderBy: [{ priority: 'desc' }, { createdAt: 'asc' }],
-  })
 
-  return c.json({
-    success: true,
-    data: {
-      rules: userRules.map((r) => ({
-        id: r.id,
-        name: r.name,
-        description: r.description,
-        minAmount: r.minAmount,
-        maxAmount: r.maxAmount,
-        keywords: typeof r.keywords === 'string' ? JSON.parse(r.keywords || '[]') : [],
-        action: r.action,
-        actionData: typeof r.actionData === 'string' ? JSON.parse(r.actionData || '{}') : (r.actionData || {}),
-        cooldownMs: r.cooldownMs,
-        maxPerHour: r.maxPerHour,
-        isActive: r.isActive,
-        priority: r.priority,
-        createdAt: r.createdAt,
-        updatedAt: r.updatedAt,
-      })),
-      total: userRules.length,
-    },
-  })
+  if (userId === DEMO_USER.id) {
+    return c.json({
+      success: true,
+      data: {
+        rules: DEMO_RULES,
+        total: DEMO_RULES.length,
+      },
+    })
+  }
+
+  try {
+    const userRules = await prisma.donationRule.findMany({
+      where: { userId },
+      orderBy: [{ priority: 'desc' }, { createdAt: 'asc' }],
+    })
+
+    return c.json({
+      success: true,
+      data: {
+        rules: userRules.map((r) => ({
+          id: r.id,
+          name: r.name,
+          description: r.description,
+          minAmount: r.minAmount,
+          maxAmount: r.maxAmount,
+          keywords: typeof r.keywords === 'string' ? JSON.parse(r.keywords || '[]') : [],
+          action: r.action,
+          actionData: typeof r.actionData === 'string' ? JSON.parse(r.actionData || '{}') : (r.actionData || {}),
+          cooldownMs: r.cooldownMs,
+          maxPerHour: r.maxPerHour,
+          isActive: r.isActive,
+          priority: r.priority,
+          createdAt: r.createdAt,
+          updatedAt: r.updatedAt,
+        })),
+        total: userRules.length,
+      },
+    })
+  } catch (error) {
+    return c.json({
+      success: true,
+      data: {
+        rules: DEMO_RULES,
+        total: DEMO_RULES.length,
+      },
+    })
+  }
 })
 
 // Criar regra
