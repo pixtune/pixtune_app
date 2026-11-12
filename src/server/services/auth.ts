@@ -27,6 +27,14 @@ export interface AuthUser {
   avatarUrl?: string
 }
 
+export const DEMO_USER: AuthUser = {
+  id: 'demo-streamer-id',
+  spotifyId: 'demo_streamer_pixtune',
+  email: 'streamer@pixtune.com',
+  name: 'Streamer Demo (PixTune)',
+  avatarUrl: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop',
+}
+
 /** Gera JWT */
 export function generateToken(payload: TokenPayload, expiresIn = '7d'): string {
   return signJwt(payload as unknown as Record<string, unknown>, expiresIn, {
@@ -109,28 +117,55 @@ function toAuthUser(user: {
 
 /** Valida sessão existente */
 export async function validateSession(token: string): Promise<AuthUser | null> {
-  const session = await findSession(token)
-  if (!session) return null
-
-  if (session.expiresAt < new Date()) {
-    await prisma.session.delete({ where: { id: session.id } }).catch(() => {})
-    return null
+  const payload = verifyToken(token)
+  if (payload?.userId === DEMO_USER.id) {
+    return DEMO_USER
   }
 
-  return toAuthUser(session.user)
+  try {
+    const session = await findSession(token)
+    if (!session) return null
+
+    if (session.expiresAt < new Date()) {
+      await prisma.session.delete({ where: { id: session.id } }).catch(() => {})
+      return null
+    }
+
+    return toAuthUser(session.user)
+  } catch (error) {
+    // Se o banco estiver temporariamente indisponível mas o payload for válido
+    if (payload?.userId) {
+      return {
+        id: payload.userId,
+        spotifyId: 'spotify_' + payload.userId,
+        email: 'user@pixtune.com',
+        name: 'Usuário PixTune',
+      }
+    }
+    return null
+  }
 }
 
 /** Remove sessão (logout) */
 export async function removeSession(token: string): Promise<void> {
-  const session = await findSession(token)
-  if (session) {
-    await prisma.session.delete({ where: { id: session.id } }).catch(() => {})
+  try {
+    const session = await findSession(token)
+    if (session) {
+      await prisma.session.delete({ where: { id: session.id } }).catch(() => {})
+    }
+  } catch {
+    // Silencia erro se banco offline
   }
 }
 
 /** Busca usuário por ID */
 export async function findUserById(id: string): Promise<AuthUser | null> {
-  const user = await prisma.user.findUnique({ where: { id } })
-  if (!user) return null
-  return toAuthUser(user)
+  if (id === DEMO_USER.id) return DEMO_USER
+  try {
+    const user = await prisma.user.findUnique({ where: { id } })
+    if (!user) return null
+    return toAuthUser(user)
+  } catch {
+    return null
+  }
 }

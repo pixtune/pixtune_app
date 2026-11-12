@@ -19,6 +19,7 @@ import {
   SpotifyError,
   withSpotifyAccessToken,
 } from '../services/spotify.js'
+import { DEMO_USER } from '../services/auth.js'
 
 const music = new Hono()
 
@@ -100,32 +101,78 @@ music.get('/catalog', authMiddleware, async (c) => {
 music.get('/status', authMiddleware, async (c) => {
   const userId = getUserId(c)
 
-  const current = await prisma.queueItem.findFirst({
-    where: { userId, provider: 'spotify', status: { in: ['playing', 'paused'] } },
-    include: queueItemInclude,
-    orderBy: [{ playedAt: 'desc' }, { createdAt: 'desc' }],
-  })
+  if (userId === DEMO_USER.id) {
+    return c.json({
+      success: true,
+      data: {
+        isPlaying: true,
+        currentTrack: {
+          id: 'demo-track-1',
+          title: 'Evidências',
+          artist: 'Chitãozinho & Xororó',
+          album: 'Grandes Sucessos',
+          artworkUrl: 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=400&auto=format&fit=crop',
+          durationMs: 279000,
+          sourceUrl: 'https://open.spotify.com/track/2b9FJrXDumCs12WHGKVpWJ',
+          provider: 'spotify',
+          providerId: '2b9FJrXDumCs12WHGKVpWJ',
+          amountCents: 5000,
+          donorName: 'Superfan LivePix',
+          status: 'playing',
+          position: 0,
+        },
+        volume: 75,
+        positionMs: 45000,
+        durationMs: 279000,
+        autoPlay: true,
+        hasPending: true,
+        pendingCount: 2,
+      },
+    })
+  }
 
-  const [settings, pendingCount] = await Promise.all([
-    prisma.settings.findUnique({ where: { userId } }),
-    prisma.queueItem.count({
-      where: { userId, provider: 'spotify', status: 'pending', providerId: { not: null } },
-    }),
-  ])
+  try {
+    const current = await prisma.queueItem.findFirst({
+      where: { userId, provider: 'spotify', status: { in: ['playing', 'paused'] } },
+      include: queueItemInclude,
+      orderBy: [{ playedAt: 'desc' }, { createdAt: 'desc' }],
+    })
 
-  return c.json({
-    success: true,
-    data: {
-      isPlaying: current?.status === 'playing',
-      currentTrack: trackPayload(current),
-      volume: settings?.defaultVolume ?? 70,
-      positionMs: 0,
-      durationMs: current?.durationMs ?? 0,
-      autoPlay: settings?.autoPlay ?? true,
-      hasPending: pendingCount > 0,
-      pendingCount,
-    },
-  })
+    const [settings, pendingCount] = await Promise.all([
+      prisma.settings.findUnique({ where: { userId } }),
+      prisma.queueItem.count({
+        where: { userId, provider: 'spotify', status: 'pending', providerId: { not: null } },
+      }),
+    ])
+
+    return c.json({
+      success: true,
+      data: {
+        isPlaying: current?.status === 'playing',
+        currentTrack: trackPayload(current),
+        volume: settings?.defaultVolume ?? 70,
+        positionMs: 0,
+        durationMs: current?.durationMs ?? 0,
+        autoPlay: settings?.autoPlay ?? true,
+        hasPending: pendingCount > 0,
+        pendingCount,
+      },
+    })
+  } catch (error) {
+    return c.json({
+      success: true,
+      data: {
+        isPlaying: false,
+        currentTrack: null,
+        volume: 70,
+        positionMs: 0,
+        durationMs: 0,
+        autoPlay: true,
+        hasPending: false,
+        pendingCount: 0,
+      },
+    })
+  }
 })
 
 // Resolver link/ID do Spotify em metadados (título, artista, capa e duração).

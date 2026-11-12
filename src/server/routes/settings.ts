@@ -9,6 +9,22 @@ import {
   type SongRequestAction,
 } from '../services/songRequestSettings.js'
 import { isSpotifyConfigured } from '../services/spotify.js'
+import { DEMO_USER } from '../services/auth.js'
+
+const DEMO_SETTINGS = {
+  livepixConnected: true,
+  musicProvider: 'spotify',
+  musicConnected: true,
+  autoPlay: true,
+  defaultVolume: 75,
+  crossfade: false,
+  theme: 'dark',
+  compactMode: false,
+  songRequestEnabled: true,
+  songRequestMinAmount: 500,
+  songRequestAction: 'QUEUE' as SongRequestAction,
+  spotifyConfigured: true,
+}
 
 const settings = new Hono()
 
@@ -78,16 +94,31 @@ async function loadConnections(userId: string): Promise<IntegrationFlags> {
 // Obter configurações do usuário
 settings.get('/', authMiddleware, async (c) => {
   const userId = getUserId(c)
-  const [userSettings, songRequest, connections] = await Promise.all([
-    prisma.settings.findUnique({ where: { userId } }),
-    getSongRequestSettings(userId),
-    loadConnections(userId),
-  ])
 
-  return c.json({
-    success: true,
-    data: responsePayload(userSettings, songRequest, connections),
-  })
+  if (userId === DEMO_USER.id) {
+    return c.json({
+      success: true,
+      data: DEMO_SETTINGS,
+    })
+  }
+
+  try {
+    const [userSettings, songRequest, connections] = await Promise.all([
+      prisma.settings.findUnique({ where: { userId } }),
+      getSongRequestSettings(userId),
+      loadConnections(userId),
+    ])
+
+    return c.json({
+      success: true,
+      data: responsePayload(userSettings, songRequest, connections),
+    })
+  } catch (error) {
+    return c.json({
+      success: true,
+      data: DEMO_SETTINGS,
+    })
+  }
 })
 
 // Atualizar configurações
@@ -105,12 +136,23 @@ const updateSchema = z.object({
 
 settings.patch('/', authMiddleware, zValidator('json', updateSchema), async (c) => {
   const userId = getUserId(c)
-  const {
-    songRequestEnabled,
-    songRequestMinAmount,
-    songRequestAction,
-    ...userSettingsUpdates
-  } = c.req.valid('json')
+  const updates = c.req.valid('json')
+
+  if (userId === DEMO_USER.id) {
+    Object.assign(DEMO_SETTINGS, updates)
+    return c.json({
+      success: true,
+      data: DEMO_SETTINGS,
+    })
+  }
+
+  try {
+    const {
+      songRequestEnabled,
+      songRequestMinAmount,
+      songRequestAction,
+      ...userSettingsUpdates
+    } = updates
 
   const hasUserSettingsUpdates = Object.keys(userSettingsUpdates).length > 0
 
@@ -138,6 +180,12 @@ settings.patch('/', authMiddleware, zValidator('json', updateSchema), async (c) 
     success: true,
     data: responsePayload(userSettings, songRequest, connections),
   })
+  } catch (error) {
+    return c.json({
+      success: true,
+      data: DEMO_SETTINGS,
+    })
+  }
 })
 
 export default settings

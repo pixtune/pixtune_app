@@ -25,7 +25,6 @@ import {
   SPOTIFY_DRM_MESSAGE,
   SPOTIFY_GENERIC_MESSAGE,
   SPOTIFY_INIT_MESSAGE,
-  SPOTIFY_MOBILE_AUTOPLAY_MESSAGE,
   SPOTIFY_NETWORK_MESSAGE,
   SPOTIFY_PREMIUM_MESSAGE,
   SPOTIFY_RESTRICTION_MESSAGE,
@@ -669,6 +668,21 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
    * forma de separar DRM de bloqueio de autoplay.
    */
   const activateAudio = useCallback((force = false): Promise<boolean> => {
+    // Tenta também desbloquear o AudioContext nativo do dispositivo
+    try {
+      const AudioCtx =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+      if (AudioCtx) {
+        const dummyCtx = new AudioCtx()
+        if (dummyCtx.state === 'suspended') {
+          void dummyCtx.resume()
+        }
+      }
+    } catch {
+      // silencioso
+    }
+
     // Se uma falha de autoplay já sinalizou necessidade de novo gesto, não
     // confie no estado antigo: o elemento pode ter sido suspenso pelo sistema.
     // Chamamos activateElement() de novo dentro do clique do usuário.
@@ -916,10 +930,11 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
               audioUnlockedRef.current = false
               activationPromiseRef.current = null
               setNeedsAudioActivation(true)
+              setError(null)
             } else {
               markFatalPlayback(info.detail || info.message)
+              setError(info.message)
             }
-            setError(info.message)
             setErrorDetail(info.detail)
             if (err instanceof Error) {
               console.warn('[PixTune] Spotify playback start failed:', err.message)
@@ -1368,7 +1383,7 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
           setIsLoading(false)
           updatePlaying(false)
           setNeedsAudioActivation(true)
-          setError(SPOTIFY_MOBILE_AUTOPLAY_MESSAGE)
+          setError(null)
           setErrorDetail('autoplay_failed: o navegador recusou o áudio sem gesto')
           console.warn('[PixTune] Spotify autoplay_failed')
         })
@@ -1390,14 +1405,15 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
               audioUnlockedRef.current = false
               activationPromiseRef.current = null
               setNeedsAudioActivation(true)
+              setError(null)
             } else {
               // DRM, faixa inválida, Premium ou erro desconhecido: não deixa o
               // polling de 4s chamar o play repetidamente.
               markFatalPlayback(`playback_error: ${message || '(sem mensagem)'}`)
               setNeedsAudioActivation(false)
+              setError(playbackErrorMessage(message, { mobile: isMobileRef.current }))
             }
 
-            setError(playbackErrorMessage(message, { mobile: isMobileRef.current }))
             setErrorDetail(
               `playback_error: ${message || '(sem mensagem)'}${
                 lastActivationErrorRef.current
@@ -1423,7 +1439,8 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
                   `playback_error sem DRM: ${message || '(sem mensagem)'}`
                 )
               } else if (blocked) {
-                setError(SPOTIFY_MOBILE_AUTOPLAY_MESSAGE)
+                setNeedsAudioActivation(true)
+                setError(null)
               }
             })
           }
@@ -1812,11 +1829,16 @@ export function SpotifyAudioProvider({ children }: { children: ReactNode }) {
   )
 
   const togglePlay = useCallback(async () => {
-    // Também precisa ser síncrono: é o gesto que libera o áudio no iOS.
+    // Também precisa ser síncrono: é o gesto que libera o áudio no iOS e Android.
     const activation = activateAudio(true)
     clearFatalPlayback()
     setError(null)
     setErrorDetail(null)
+    setNeedsAudioActivation(false)
+
+    if (!deviceIdRef.current) {
+      void connectPlayer()
+    }
 
     try {
       if (isPlayingRef.current) {

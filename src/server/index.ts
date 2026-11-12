@@ -112,6 +112,9 @@ app.use('*', async (c, next) => {
 app.get('/health', (c) => {
   return c.json({ status: 'ok', service: 'pixtune-api', timestamp: new Date().toISOString() })
 })
+app.get('/api/health', (c) => {
+  return c.json({ status: 'ok', service: 'pixtune-api', timestamp: new Date().toISOString() })
+})
 
 // Routes
 app.route('/api/auth', authRoutes)

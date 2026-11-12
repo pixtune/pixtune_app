@@ -28,7 +28,7 @@ import {
   missingSpotifyScopes,
   parseSpotifyScopes,
 } from '../services/spotify.js'
-import { createSession, removeSession } from '../services/auth.js'
+import { createSession, removeSession, DEMO_USER, generateToken } from '../services/auth.js'
 import { getSessionTokens, resolveSessionUser } from '../middleware/auth.js'
 import { describeError, logEvent } from '../lib/logger.js'
 import {
@@ -90,6 +90,44 @@ auth.get('/me', async (c) => {
       },
     },
   })
+})
+
+// ---------------------------------------------------------------
+// Login Modo Demo / Teste (acesso imediato sem burocracia)
+// ---------------------------------------------------------------
+
+auth.post('/demo', async (c) => {
+  const token = generateToken(
+    { userId: DEMO_USER.id, sessionToken: 'demo-session-token' },
+    '7d'
+  )
+
+  // Grava cookie HttpOnly
+  setCookie(c, SESSION_COOKIE, token, oauthCookieOptions(7 * 24 * 60 * 60))
+
+  return c.json({
+    success: true,
+    data: {
+      user: {
+        id: DEMO_USER.id,
+        spotifyId: DEMO_USER.spotifyId,
+        name: DEMO_USER.name,
+        email: DEMO_USER.email,
+        avatarUrl: DEMO_USER.avatarUrl,
+      },
+      token,
+    },
+  })
+})
+
+auth.get('/demo', async (c) => {
+  const token = generateToken(
+    { userId: DEMO_USER.id, sessionToken: 'demo-session-token' },
+    '7d'
+  )
+
+  setCookie(c, SESSION_COOKIE, token, oauthCookieOptions(7 * 24 * 60 * 60))
+  return c.redirect(appUrl('/dashboard'))
 })
 
 // ---------------------------------------------------------------

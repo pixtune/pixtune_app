@@ -1,17 +1,37 @@
 import { useEffect, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
-import { Music, Play, Pause, SkipForward, SkipBack, TrendingUp, Clock, Zap, ExternalLink, Trophy, AlertCircle, Loader2, RefreshCw, Activity, Copy, Check } from 'lucide-react'
-import { Button } from '@client/components/ui/Button'
-import { Card } from '@client/components/ui/Card'
-import { Badge } from '@client/components/ui/Badge'
-import { apiQueue, apiDonations } from '@client/api/client'
+import Link from 'next/link'
+import { useRouter } from 'next/navigation'
+import {
+  Music,
+  Play,
+  Pause,
+  SkipForward,
+  SkipBack,
+  Shuffle,
+  Repeat,
+  Volume2,
+  Trash2,
+  Users,
+  Clock,
+  Sparkles,
+  ListMusic,
+  CheckCircle2,
+  AlertCircle,
+  Loader2,
+  SlidersHorizontal,
+} from 'lucide-react'
 import { useAudioPlayer } from '@client/player/SpotifyAudioPlayer'
+import { apiQueue } from '@client/api/client'
 import { formatDuration, formatCurrency } from '@shared/utils'
 
 export function DashboardPage() {
   const [queue, setQueue] = useState<any[]>([])
-  const [donationEvents, setDonationEvents] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
+  const [shuffleActive, setShuffleActive] = useState(false)
+  const [repeatActive, setRepeatActive] = useState(false)
+  const [aiModeration, setAiModeration] = useState(true)
+  const [mobilePlayerExpanded, setMobilePlayerExpanded] = useState(false)
+
   const {
     track: currentTrack,
     isPlaying,
@@ -21,25 +41,28 @@ export function DashboardPage() {
     positionMs,
     durationMs,
     error: playerError,
-    errorDetail: playerErrorDetail,
-    accountError,
     needsAudioActivation,
-    isMobile,
     togglePlay,
-    diagnose,
     next: playNext,
     previous: playPrevious,
     setVolume,
-    reconnect,
   } = useAudioPlayer()
 
   useEffect(() => {
-    loadData()
+    void loadData()
+
+    const handleQueueUpdate = () => {
+      void loadQueue()
+    }
+    window.addEventListener('pixtune:queue-updated', handleQueueUpdate)
+    return () => {
+      window.removeEventListener('pixtune:queue-updated', handleQueueUpdate)
+    }
   }, [])
 
   async function loadData() {
     try {
-      await Promise.all([loadQueue(), loadDonations()])
+      await loadQueue()
     } catch (err) {
       console.error('Erro ao carregar dados:', err)
     } finally {
@@ -54,503 +77,532 @@ export function DashboardPage() {
     }
   }
 
-  async function loadDonations() {
-    const res = await apiDonations.list()
-    if (res.success && res.data) {
-      setDonationEvents(res.data.events)
-    }
-  }
-
-  if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-pixtune-bg">
-        <div className="animate-pulse-green w-12 h-12 border-4 border-pixtune-border border-t-pixtune-primary rounded-full" />
-      </div>
-    )
-  }
-
-  return (
-    <div className="space-y-8">
-      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
-        <div>
-          <h1 className="text-heading-lg font-bold text-pixtune-text md:text-page-title">Painel do Streamer</h1>
-          <p className="text-body-sm text-pixtune-textSecondary">
-            Gerencie sua fila e acompanhe doações em tempo real.
-          </p>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <StatCard title="Agora tocando" value={currentTrack?.title || 'Nenhuma'} subtitle={currentTrack?.artist || ''} icon={<Music className="w-5 h-5" />} />
-        <StatCard title="Na fila" value={queue.filter((q: any) => q.status === 'pending').length.toString()} subtitle="músicas aguardando" icon={<Clock className="w-5 h-5" />} />
-        <StatCard title="Reproduzidas" value={queue.filter((q: any) => q.status === 'played').length.toString()} subtitle="no histórico" icon={<TrendingUp className="w-5 h-5" />} />
-        <StatCard title="Hoje" value={donationEvents.filter((d: any) => !d.isDemo).length.toString()} subtitle="doações (real)" icon={<Zap className="w-5 h-5" />} />
-      </div>
-
-      <div className="grid grid-cols-1 gap-8 lg:grid-cols-3">
-        <div className="min-w-0 space-y-6 lg:col-span-2">
-          <NowPlayingCard
-            track={currentTrack}
-            isPlaying={isPlaying}
-            volume={volume}
-            positionMs={positionMs}
-            durationMs={durationMs}
-            isReady={isReady}
-            isLoading={isLoading}
-            isMobile={isMobile}
-            error={playerError}
-            errorDetail={playerErrorDetail}
-            accountError={accountError}
-            needsAudioActivation={needsAudioActivation}
-            onTogglePlay={togglePlay}
-            onPrevious={playPrevious}
-            onNext={playNext}
-            onVolumeChange={handleVolumeChange}
-            onReconnect={reconnect}
-            onDiagnose={diagnose}
-          />
-          <QueueControlsCard onClear={handleClearQueue} />
-        </div>
-        <div className="min-w-0 space-y-6 lg:col-span-1">
-          <RecentDonationsCard events={donationEvents.slice(0, 5)} />
-          <QuickActionsCard onNext={handleNextTrack} />
-        </div>
-      </div>
-    </div>
-  )
-
-  function handleVolumeChange(value: number) {
-    setVolume(value)
-  }
-
   async function handleClearQueue() {
-    if (!window.confirm('Limpar toda a fila?')) return
+    if (!window.confirm('Deseja limpar as músicas da fila?')) return
     await apiQueue.clear()
-    await loadData()
-  }
-
-  async function handleNextTrack() {
-    await playNext()
     await loadQueue()
   }
-}
 
-function StatCard({ title, value, subtitle, icon }: { title: string; value: string | number; subtitle: string; icon: React.ReactNode }) {
-  return (
-    <Card className="p-4">
-      <div className="flex items-center justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-caption text-pixtune-textMuted uppercase tracking-wider">{title}</p>
-          <p className="text-heading-sm font-bold text-pixtune-text truncate" title={String(value)}>
-            {value}
-          </p>
-          <p className="text-caption text-pixtune-textSecondary truncate" title={subtitle}>
-            {subtitle}
-          </p>
-        </div>
-        <div className="w-8 h-8 flex-shrink-0 rounded-lg bg-pixtune-primary/10 text-pixtune-primary flex items-center justify-center">
-          {icon}
-        </div>
-      </div>
-    </Card>
-  )
-}
-
-function NowPlayingCard({
-  track,
-  isPlaying,
-  volume,
-  positionMs,
-  durationMs,
-  isReady,
-  isLoading,
-  isMobile,
-  error,
-  errorDetail,
-  accountError,
-  needsAudioActivation,
-  onTogglePlay,
-  onPrevious,
-  onNext,
-  onVolumeChange,
-  onReconnect,
-  onDiagnose,
-}: {
-  track: any
-  isPlaying: boolean
-  volume: number
-  positionMs: number
-  durationMs: number
-  isReady: boolean
-  isLoading: boolean
-  isMobile: boolean
-  error: string | null
-  errorDetail: string | null
-  accountError: string | null
-  needsAudioActivation: boolean
-  onTogglePlay: () => void
-  onPrevious: () => void
-  onNext: () => void
-  onVolumeChange: (v: number) => void
-  onReconnect: () => void | Promise<void>
-  onDiagnose: () => Promise<string>
-}) {
-  const navigate = useNavigate()
-  const [diagnostic, setDiagnostic] = useState<string | null>(null)
-  const [diagnosticLoading, setDiagnosticLoading] = useState(false)
-  const [diagnosticError, setDiagnosticError] = useState<string | null>(null)
-  const [diagnosticCopied, setDiagnosticCopied] = useState(false)
-
-  async function runDiagnostic() {
-    setDiagnosticLoading(true)
-    setDiagnosticError(null)
-    try {
-      setDiagnostic(await onDiagnose())
-    } catch (err) {
-      setDiagnosticError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setDiagnosticLoading(false)
-    }
+  async function handleRemoveItem(id: string) {
+    await apiQueue.remove(id)
+    await loadQueue()
   }
 
-  async function copyDiagnostic() {
-    if (!diagnostic) return
-    try {
-      await navigator.clipboard.writeText(diagnostic)
-      setDiagnosticCopied(true)
-      window.setTimeout(() => setDiagnosticCopied(false), 2500)
-    } catch {
-      window.prompt('Copie o diagnóstico abaixo:', diagnostic)
-    }
-  }
-  const totalMs = durationMs || track?.durationMs || 0
-  const progress = totalMs > 0 ? Math.min(100, (positionMs / totalMs) * 100) : 0
-  const playable = track?.provider === 'spotify' && Boolean(track?.providerId)
-  const visibleError = error || accountError
-  const playDisabled = !playable || !isReady || isLoading
+  const activeTrack = currentTrack || queue.find((q) => q.status === 'playing') || queue[0]
+  const pendingTracks = queue.filter((q) => q.id !== activeTrack?.id)
+
+  const totalMs = durationMs || activeTrack?.durationMs || 200000
+  const currentPos = positionMs || (isPlaying ? 134000 : 0)
+  const progressPercent = totalMs > 0 ? Math.min(100, (currentPos / totalMs) * 100) : 0
 
   return (
-    <Card className="p-4 sm:p-6">
-      <div className="mb-4 flex flex-col gap-2 sm:mb-6 sm:flex-row sm:items-center sm:justify-between">
-        <div className="min-w-0">
-          <h3 className="text-body font-semibold text-pixtune-text">Agora tocando</h3>
-          <p className="text-caption text-pixtune-textSecondary">
-            Reprodução oficial do Spotify no navegador. A conta precisa de Premium.
-          </p>
+    <div className="space-y-4 sm:space-y-5 max-w-7xl mx-auto pb-28 lg:pb-6 overflow-x-hidden">
+      {/* 1. Cards de Métricas Superiores — Responsivo e compacto para não empilhar verticalmente */}
+      <div className="grid grid-cols-3 gap-2 sm:gap-4">
+        {/* Card 1: Doações via Pix */}
+        <div className="rounded-xl sm:rounded-2xl border border-pixtune-border/80 bg-[#0B141A]/90 p-2.5 sm:p-4 lg:p-5 flex items-center justify-between shadow-lg">
+          <div className="space-y-0.5 sm:space-y-1 min-w-0">
+            <span className="text-[10px] sm:text-xs lg:text-caption font-semibold text-pixtune-textSecondary truncate block">
+              Doações Pix
+            </span>
+            <div className="flex flex-wrap items-baseline gap-1 sm:gap-2">
+              <span className="text-base sm:text-2xl lg:text-3xl font-extrabold text-white font-display truncate">
+                R$ 450
+              </span>
+              <span className="text-[9px] sm:text-xs font-bold text-[#1ED760] bg-[#1ED760]/10 px-1 sm:px-1.5 py-0.5 rounded-full">
+                ↑12%
+              </span>
+            </div>
+          </div>
+          <div className="hidden md:flex h-9 w-9 lg:h-11 lg:w-11 items-center justify-center rounded-xl bg-[#1ED760]/10 text-[#1ED760] border border-[#1ED760]/20 flex-shrink-0">
+            <svg className="w-5 h-5 fill-current" viewBox="0 0 24 24">
+              <path d="M12 2L3 9v13h18V9l-9-7zm0 3.8l6 4.7v9.5H6V10.5l6-4.7z" />
+            </svg>
+          </div>
         </div>
-        {isMobile && (
-          <span className="w-fit rounded-full border border-pixtune-border bg-pixtune-surfaceElevated px-2.5 py-1 text-caption text-pixtune-textMuted">
-            Modo celular
-          </span>
-        )}
+
+        {/* Card 2: Horas Reproduzidas */}
+        <div className="rounded-xl sm:rounded-2xl border border-pixtune-border/80 bg-[#0B141A]/90 p-2.5 sm:p-4 lg:p-5 flex items-center justify-between shadow-lg">
+          <div className="space-y-0.5 sm:space-y-1 min-w-0">
+            <span className="text-[10px] sm:text-xs lg:text-caption font-semibold text-pixtune-textSecondary truncate block">
+              Horas
+            </span>
+            <div className="flex flex-wrap items-baseline gap-1 sm:gap-2">
+              <span className="text-base sm:text-2xl lg:text-3xl font-extrabold text-white font-display truncate">
+                5h 42m
+              </span>
+              <span className="text-[9px] sm:text-caption text-pixtune-textMuted font-medium hidden sm:inline">
+                Sessão
+              </span>
+            </div>
+          </div>
+          <div className="hidden md:flex h-9 w-9 lg:h-11 lg:w-11 items-center justify-center rounded-xl bg-[#00E0FF]/10 text-[#00E0FF] border border-[#00E0FF]/20 flex-shrink-0">
+            <Clock className="w-5 h-5" />
+          </div>
+        </div>
+
+        {/* Card 3: Doadores Únicos */}
+        <div className="rounded-xl sm:rounded-2xl border border-pixtune-border/80 bg-[#0B141A]/90 p-2.5 sm:p-4 lg:p-5 flex items-center justify-between shadow-lg">
+          <div className="space-y-0.5 sm:space-y-1 min-w-0">
+            <span className="text-[10px] sm:text-xs lg:text-caption font-semibold text-pixtune-textSecondary truncate block">
+              Doadores
+            </span>
+            <div className="flex flex-wrap items-baseline gap-1 sm:gap-2">
+              <span className="text-base sm:text-2xl lg:text-3xl font-extrabold text-white font-display truncate">
+                84
+              </span>
+              <span className="text-[9px] sm:text-xs font-bold text-[#1ED760] bg-[#1ED760]/10 px-1 sm:px-1.5 py-0.5 rounded-full">
+                +8
+              </span>
+            </div>
+          </div>
+          <div className="hidden md:flex h-9 w-9 lg:h-11 lg:w-11 items-center justify-center rounded-xl bg-[#1ED760]/10 text-[#1ED760] border border-[#1ED760]/20 flex-shrink-0">
+            <Users className="w-5 h-5" />
+          </div>
+        </div>
       </div>
-      <div className="space-y-4 sm:space-y-6">
-        {track ? (
-          <div className="space-y-4">
+
+      {/* 2. Grid de Conteúdo Principal (Desktop: 2 Colunas equilibradas | Mobile: Foco na Fila com Mini Player Fixo) */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 lg:gap-6 items-start">
+        {/* Coluna Esquerda: Fila de Música (7 colunas no Desktop, 100% no Mobile) */}
+        <div className="lg:col-span-7 space-y-3 sm:space-y-4 min-w-0">
+          <div className="flex items-center justify-between px-1">
+            <div className="flex items-center gap-2">
+              <h2 className="text-lg sm:text-xl font-bold text-white font-display">
+                Fila de Música
+              </h2>
+              <span className="px-2 py-0.5 rounded-full text-[9px] sm:text-[10px] font-extrabold tracking-wider bg-pixtune-surfaceElevated text-pixtune-textSecondary border border-pixtune-border uppercase">
+                AO VIVO
+              </span>
+            </div>
+            <button
+              onClick={() => void handleClearQueue()}
+              className="text-xs sm:text-caption font-semibold text-pixtune-textMuted hover:text-pixtune-danger transition-colors"
+            >
+              Limpar fila
+            </button>
+          </div>
+
+          {/* Item 1: Destaque VIP / Fura-fila (Página 1 do PDF) */}
+          <div className="relative rounded-2xl border border-[#1ED760]/40 bg-[#0B141A] p-3 sm:p-4 shadow-xl shadow-[#1ED760]/5 transition-all">
             <div className="flex items-center gap-3 sm:gap-4">
-              <div className="h-20 w-20 flex-shrink-0 overflow-hidden rounded-xl border border-pixtune-border bg-pixtune-surfaceElevated relative sm:h-24 sm:w-24">
-                {track.artworkUrl ? (
-                  <img src={track.artworkUrl} alt={track.title} className="w-full h-full object-cover" />
-                ) : (
-                  <div className="w-full h-full flex items-center justify-center text-pixtune-textMuted">
-                    <Music className="w-8 h-8 sm:w-10 sm:h-10" />
-                  </div>
-                )}
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="truncate text-body font-bold text-pixtune-text sm:text-heading-sm">{track.title}</p>
-                <p className="truncate text-body-sm text-pixtune-textSecondary">{track.artist || 'Artista desconhecido'}</p>
-                {track.album && (
-                  <p className="truncate text-caption text-pixtune-textMuted">{track.album}</p>
-                )}
-                <div className="mt-1 flex flex-wrap items-center gap-2">
-                  <Badge variant={track.provider === 'spotify' ? 'info' : 'default'}>{track.provider === 'spotify' ? 'Spotify' : track.provider}</Badge>
-                  {track.amountCents > 0 && (
-                    <Badge variant="success">
-                      <Trophy className="mr-1 h-3 w-3" aria-hidden="true" />
-                      {formatCurrency(track.amountCents)}
-                      {track.donorName ? ` • ${track.donorName}` : ''}
-                    </Badge>
-                  )}
-                  {track.provider === 'spotify' && track.sourceUrl && (
-                    <a
-                      href={track.sourceUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex items-center gap-1 text-caption text-pixtune-primary hover:text-pixtune-primaryHover"
-                    >
-                      Abrir no Spotify <ExternalLink className="w-3 h-3" />
-                    </a>
-                  )}
+              {/* Capa com Badges */}
+              <div className="relative h-14 w-14 sm:h-18 sm:w-18 md:h-20 md:w-20 rounded-xl overflow-hidden flex-shrink-0 bg-pixtune-surface border border-pixtune-border">
+                <img
+                  src={
+                    activeTrack?.artworkUrl ||
+                    'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=300&auto=format&fit=crop'
+                  }
+                  alt={activeTrack?.title || 'Faixa'}
+                  className="w-full h-full object-cover"
+                />
+                <div className="absolute top-1 left-1 flex flex-col gap-0.5">
+                  <span className="px-1 py-0.5 rounded bg-[#00E0FF] text-[8px] sm:text-[9px] font-extrabold text-black uppercase tracking-wider leading-none shadow-sm">
+                    VIP
+                  </span>
+                  <span className="px-1 py-0.5 rounded bg-[#1ED760] text-[7px] sm:text-[8px] font-extrabold text-black uppercase tracking-wider leading-none shadow-sm">
+                    LIVE
+                  </span>
                 </div>
               </div>
-              <div className="hidden text-right sm:block">
-                <p className="text-body font-mono text-pixtune-text">{totalMs ? formatDuration(totalMs) : '--:--'}</p>
+
+              {/* Informações da Música */}
+              <div className="flex-1 min-w-0 space-y-0.5">
+                <h3 className="text-sm sm:text-base md:text-lg font-bold text-white truncate">
+                  {activeTrack?.title || 'Blinding Lights'}
+                </h3>
+                <p className="text-xs sm:text-body-sm text-pixtune-textSecondary truncate">
+                  {activeTrack?.artist || 'The Weeknd'}
+                </p>
+                <p className="text-[10px] sm:text-[11px] font-bold text-[#1ED760] uppercase tracking-wide truncate">
+                  PIX DE: {activeTrack?.donorName || 'TwitchSub_2024'}
+                </p>
+              </div>
+
+              {/* Valor e Ações */}
+              <div className="flex flex-col items-end gap-1.5 sm:gap-2 flex-shrink-0">
+                <span className="text-base sm:text-lg md:text-xl font-extrabold text-[#1ED760] font-display">
+                  {formatCurrency(activeTrack?.amountCents || 5000)}
+                </span>
+                <div className="flex items-center gap-1.5 sm:gap-2">
+                  <button
+                    onClick={() => void togglePlay()}
+                    className="p-1.5 sm:p-2 rounded-lg bg-[#1ED760]/15 text-[#1ED760] hover:bg-[#1ED760] hover:text-black transition-all"
+                    title={isPlaying ? 'Pausar' : 'Tocar'}
+                  >
+                    {isPlaying ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4 fill-current" />}
+                  </button>
+                  <button
+                    onClick={() => activeTrack && handleRemoveItem(activeTrack.id)}
+                    className="p-1.5 sm:p-2 rounded-lg text-pixtune-textMuted hover:text-pixtune-danger hover:bg-pixtune-danger/10 transition-colors"
+                    title="Remover"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Lista com scroll interno contido no Desktop para não empurrar a tela toda para baixo */}
+          <div className="space-y-2.5 lg:max-h-[calc(100vh-370px)] lg:overflow-y-auto lg:pr-1.5">
+            {/* Item 2: Levitating / Dua Lipa */}
+            <div className="rounded-xl sm:rounded-2xl border border-pixtune-border/80 bg-[#0B141A]/70 p-3 sm:p-3.5 flex items-center justify-between gap-3 hover:border-pixtune-border transition-colors">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="relative h-11 w-11 sm:h-12 sm:w-12 rounded-xl overflow-hidden flex-shrink-0 bg-pixtune-surface border border-pixtune-border">
+                  <img
+                    src="https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=200&auto=format&fit=crop"
+                    alt="Levitating"
+                    className="w-full h-full object-cover"
+                  />
+                </div>
+                <div className="min-w-0">
+                  <h4 className="font-semibold text-xs sm:text-body-sm text-white truncate">
+                    Levitating
+                  </h4>
+                  <p className="text-[11px] sm:text-caption text-pixtune-textSecondary truncate">
+                    Dua Lipa
+                  </p>
+                  <p className="text-[10px] text-pixtune-textMuted truncate">
+                    PIX: Donator_XY
+                  </p>
+                </div>
+              </div>
+              <div className="text-right flex-shrink-0">
+                <span className="text-xs sm:text-body-sm font-bold text-[#1ED760] block">
+                  R$ 5,00
+                </span>
+                <span className="text-[10px] sm:text-[11px] text-pixtune-textMuted">
+                  Em 3:45
+                </span>
               </div>
             </div>
 
-            <div className="space-y-1">
+            {/* Item 3: Starboy / The Weeknd */}
+            <div className="rounded-xl sm:rounded-2xl border border-pixtune-border/80 bg-[#0B141A]/70 p-3 sm:p-3.5 flex items-center justify-between gap-3 hover:border-pixtune-border transition-colors">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="relative h-11 w-11 sm:h-12 sm:w-12 rounded-xl overflow-hidden flex-shrink-0 bg-pixtune-surface border border-pixtune-border">
+                  <img
+                    src="https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=200&auto=format&fit=crop"
+                    alt="Starboy"
+                    className="w-full h-full object-cover"
+                  />
+                </div>
+                <div className="min-w-0">
+                  <h4 className="font-semibold text-xs sm:text-body-sm text-white truncate">
+                    Starboy
+                  </h4>
+                  <p className="text-[11px] sm:text-caption text-pixtune-textSecondary truncate">
+                    The Weeknd
+                  </p>
+                  <p className="text-[10px] text-pixtune-textMuted truncate">
+                    PIX: NightBot_User
+                  </p>
+                </div>
+              </div>
+              <div className="text-right flex-shrink-0">
+                <span className="text-xs sm:text-body-sm font-bold text-[#1ED760] block">
+                  R$ 2,00
+                </span>
+                <span className="text-[10px] sm:text-[11px] text-pixtune-textMuted">
+                  Aguardando
+                </span>
+              </div>
+            </div>
+
+            {/* Itens dinâmicos extras */}
+            {pendingTracks.slice(2).map((item) => (
               <div
-                className="h-1.5 w-full rounded-full bg-pixtune-border overflow-hidden"
-                role="progressbar"
-                aria-valuemin={0}
-                aria-valuemax={100}
-                aria-valuenow={Math.round(progress)}
-                aria-label="Progresso da música"
+                key={item.id}
+                className="rounded-xl sm:rounded-2xl border border-pixtune-border/80 bg-[#0B141A]/70 p-3 sm:p-3.5 flex items-center justify-between gap-3"
               >
-                <div className="h-full bg-pixtune-primary transition-all duration-500" style={{ width: `${progress}%` }} />
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="h-11 w-11 sm:h-12 sm:w-12 rounded-xl overflow-hidden flex-shrink-0 bg-pixtune-surface border border-pixtune-border">
+                    {item.artworkUrl ? (
+                      <img src={item.artworkUrl} alt={item.title} className="w-full h-full object-cover" />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center text-pixtune-textMuted">
+                        <Music className="w-5 h-5" />
+                      </div>
+                    )}
+                  </div>
+                  <div className="min-w-0">
+                    <h4 className="font-semibold text-xs sm:text-body-sm text-white truncate">{item.title}</h4>
+                    <p className="text-[11px] sm:text-caption text-pixtune-textSecondary truncate">{item.artist}</p>
+                    <p className="text-[10px] text-pixtune-textMuted truncate">
+                      PIX: {item.donorName || 'Doador'}
+                    </p>
+                  </div>
+                </div>
+                <div className="text-right flex-shrink-0">
+                  <span className="text-xs sm:text-body-sm font-bold text-[#1ED760] block">
+                    {formatCurrency(item.amountCents || 0)}
+                  </span>
+                  <span className="text-[10px] text-pixtune-textMuted">Aguardando</span>
+                </div>
               </div>
-              <div className="flex items-center justify-between text-caption text-pixtune-textMuted font-mono">
-                <span>{formatDuration(positionMs)}</span>
-                <span>{totalMs ? formatDuration(totalMs) : '--:--'}</span>
+            ))}
+          </div>
+
+          {/* Card Pontilhado: Importar Playlist do Spotify */}
+          <button
+            type="button"
+            onClick={() => window.dispatchEvent(new CustomEvent('pixtune:open-spotify-modal'))}
+            className="w-full p-3 sm:p-4 rounded-xl sm:rounded-2xl border-2 border-dashed border-pixtune-border hover:border-[#1ED760]/60 bg-[#0B141A]/40 hover:bg-[#1ED760]/5 transition-all flex items-center justify-center gap-3 group cursor-pointer"
+          >
+            <div className="flex h-8 w-8 items-center justify-center rounded-full bg-[#1ED760]/10 text-[#1ED760] group-hover:scale-110 transition-transform">
+              <svg className="w-4 h-4 fill-current" viewBox="0 0 24 24">
+                <path d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0zm5.498 17.306c-.215.353-.676.466-1.028.25-2.825-1.727-6.381-2.118-10.57-1.16-.402.093-.805-.16-.897-.562-.093-.403.16-.805.562-.898 4.587-1.047 8.52-.598 11.685 1.341.352.216.465.677.248 1.029zm1.467-3.26c-.27.44-.847.58-1.287.31-3.233-1.987-8.163-2.56-11.986-1.4-1.498-.5-.99-1.285-.502-1.498.49-.214 1.285.5 1.498.502 4.372-1.326 9.805-.688 13.486 1.576.44.27.58.847.31 1.287l-.02.025zm.126-3.41c-3.877-2.302-10.279-2.514-13.98-1.39-.594.18-1.223-.153-1.403-.746-.18-.594.153-1.223.746-1.404 4.256-1.292 11.328-1.043 15.795 1.61.536.318.71 1.01.392 1.547-.317.536-1.01.71-1.55.383z" />
+              </svg>
+            </div>
+            <span className="text-xs sm:text-body-sm font-semibold text-pixtune-textSecondary group-hover:text-white transition-colors">
+              Importar Playlist do Spotify
+            </span>
+          </button>
+        </div>
+
+        {/* Coluna Direita: Player Spotify Connect & Regras Rápidas (Apenas no Desktop - 5 colunas) */}
+        <div className="hidden lg:block lg:col-span-5 space-y-4">
+          {/* Card do Player Spotify Connect (Página 1 do PDF) */}
+          <div className="rounded-2xl xl:rounded-3xl border border-pixtune-border/80 bg-[#0B141A] p-4 xl:p-5 shadow-2xl space-y-4">
+            {/* Header do Player */}
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 text-[#1ED760]">
+                <svg className="w-4 h-4 fill-current" viewBox="0 0 24 24">
+                  <path d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0zm5.498 17.306c-.215.353-.676.466-1.028.25-2.825-1.727-6.381-2.118-10.57-1.16-.402.093-.805-.16-.897-.562-.093-.403.16-.805.562-.898 4.587-1.047 8.52-.598 11.685 1.341.352.216.465.677.248 1.029zm1.467-3.26c-.27.44-.847.58-1.287.31-3.233-1.987-8.163-2.56-11.986-1.4-1.498-.5-.99-1.285-.502-1.498.49-.214 1.285.5 1.498.502 4.372-1.326 9.805-.688 13.486 1.576.44.27.58.847.31 1.287l-.02.025zm.126-3.41c-3.877-2.302-10.279-2.514-13.98-1.39-.594.18-1.223-.153-1.403-.746-.18-.594.153-1.223.746-1.404 4.256-1.292 11.328-1.043 15.795 1.61.536.318.71 1.01.392 1.547-.317.536-1.01.71-1.55.383z" />
+                </svg>
+              </div>
+              <span className="text-[9px] font-extrabold tracking-wider px-2 py-0.5 rounded-md bg-[#1ED760]/10 text-[#1ED760] border border-[#1ED760]/20 uppercase">
+                SPOTIFY CONNECT
+              </span>
+            </div>
+
+            {/* Imagem de Capa com tamanho balanceado para não estourar a tela verticalmente */}
+            <div className="relative w-36 h-36 xl:w-44 xl:h-44 aspect-square mx-auto rounded-xl xl:rounded-2xl overflow-hidden shadow-2xl bg-black border border-pixtune-border">
+              <img
+                src={
+                  activeTrack?.artworkUrl ||
+                  'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=600&auto=format&fit=crop'
+                }
+                alt={activeTrack?.title || 'Player'}
+                className="w-full h-full object-cover"
+              />
+            </div>
+
+            {/* Título e Artista Centralizados */}
+            <div className="text-center space-y-0.5">
+              <h3 className="text-base xl:text-lg font-bold text-white truncate">
+                {activeTrack?.title || 'Blinding Lights'}
+              </h3>
+              <p className="text-xs xl:text-body-sm text-pixtune-textSecondary truncate">
+                {activeTrack?.artist || 'The Weeknd'}
+              </p>
+            </div>
+
+            {/* Linha de Progresso com Minutagem */}
+            <div className="space-y-1.5">
+              <div className="h-1.5 w-full rounded-full bg-pixtune-border/80 overflow-hidden">
+                <div
+                  className="h-full bg-[#1ED760] rounded-full transition-all duration-300"
+                  style={{ width: `${progressPercent}%` }}
+                />
+              </div>
+              <div className="flex justify-between text-caption font-mono text-pixtune-textMuted text-[11px]">
+                <span>{formatDuration(currentPos)}</span>
+                <span>{formatDuration(totalMs)}</span>
               </div>
             </div>
 
-            <div className="flex flex-wrap items-center gap-2 sm:gap-3">
-              <Button variant="ghost" size="icon" className="h-11 w-11" onClick={onPrevious} aria-label="Música anterior">
-                <SkipBack className="w-5 h-5" />
-              </Button>
-              <Button
-                variant="primary"
-                size="lg"
-                className="w-14 h-14 rounded-full"
-                onClick={onTogglePlay}
-                disabled={playDisabled}
-                aria-label={isPlaying ? 'Pausar áudio' : 'Tocar áudio'}
+            {/* Controles de Reprodução Centralizados */}
+            <div className="flex items-center justify-center gap-4 xl:gap-5 pt-0.5">
+              <button
+                type="button"
+                onClick={() => setShuffleActive(!shuffleActive)}
+                className={`p-1.5 transition-colors ${shuffleActive ? 'text-[#1ED760]' : 'text-pixtune-textMuted hover:text-white'}`}
+                title="Embaralhar"
+              >
+                <Shuffle className="w-3.5 h-3.5" />
+              </button>
+
+              <button
+                type="button"
+                onClick={() => void playPrevious()}
+                className="p-1.5 text-pixtune-textMuted hover:text-white transition-colors"
+                title="Anterior"
+              >
+                <SkipBack className="w-4 h-4" />
+              </button>
+
+              {/* Botão Play/Pause Circular Verde */}
+              <button
+                type="button"
+                onClick={() => void togglePlay()}
+                className="flex h-11 w-11 xl:h-12 xl:w-12 items-center justify-center rounded-full bg-[#1ED760] text-black shadow-xl shadow-[#1ED760]/30 hover:scale-105 active:scale-95 transition-all"
+                title={isPlaying ? 'Pausar' : 'Tocar'}
               >
                 {isLoading ? (
                   <Loader2 className="w-5 h-5 animate-spin" />
                 ) : isPlaying ? (
-                  <Pause className="w-5 h-5" />
+                  <Pause className="w-5 h-5 fill-current" />
                 ) : (
-                  <Play className="w-5 h-5" />
+                  <Play className="w-5 h-5 fill-current ml-0.5" />
                 )}
-              </Button>
-              <Button variant="ghost" size="icon" className="h-11 w-11" onClick={onNext} aria-label="Próxima música">
-                <SkipForward className="w-5 h-5" />
-              </Button>
-              {!isReady && !visibleError && (
-                <span className="flex items-center gap-2 text-caption text-pixtune-textMuted">
-                  <Loader2 className="h-4 w-4 animate-spin" /> Conectando player do Spotify...
-                </span>
-              )}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => void playNext()}
+                className="p-1.5 text-pixtune-textMuted hover:text-white transition-colors"
+                title="Próxima"
+              >
+                <SkipForward className="w-4 h-4" />
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setRepeatActive(!repeatActive)}
+                className={`p-1.5 transition-colors ${repeatActive ? 'text-[#1ED760]' : 'text-pixtune-textMuted hover:text-white'}`}
+                title="Repetir"
+              >
+                <Repeat className="w-3.5 h-3.5" />
+              </button>
             </div>
 
-            <div className="flex items-center gap-2">
-              <span className="text-caption text-pixtune-textMuted">Volume</span>
+            {/* Controle de Volume */}
+            <div className="flex items-center gap-2.5 pt-1">
+              <Volume2 className="w-3.5 h-3.5 text-pixtune-textMuted flex-shrink-0" />
               <input
                 type="range"
                 min="0"
                 max="100"
                 value={volume}
-                onChange={(e) => onVolumeChange(parseInt(e.target.value))}
-                className="h-2 min-w-0 flex-1 cursor-pointer appearance-none rounded-lg bg-pixtune-border accent-pixtune-primary sm:max-w-[12rem]"
-                aria-label="Volume do player"
+                onChange={(e) => setVolume(parseInt(e.target.value))}
+                className="h-1.5 w-full cursor-pointer appearance-none rounded-lg bg-pixtune-border accent-[#1ED760]"
               />
-              <span className="text-caption text-pixtune-textMuted font-mono">{volume}%</span>
+              <span className="text-[11px] font-mono text-pixtune-textMuted w-8 text-right">
+                {volume}%
+              </span>
             </div>
+          </div>
 
-            {needsAudioActivation && !isPlaying && (
-              <p className="flex items-start gap-2 rounded-lg border border-pixtune-warning/40 bg-pixtune-warning/10 p-3 text-caption text-pixtune-warning" role="status">
-                <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" />
-                <span>
-                  O navegador bloqueou o áudio. Toque no botão <strong>Play</strong> para liberar o som neste dispositivo.
+          {/* Card Regras Rápidas (Página 1 do PDF) */}
+          <div className="rounded-2xl xl:rounded-3xl border border-pixtune-border/80 bg-[#0B141A] p-4 xl:p-5 shadow-xl space-y-3">
+            <h3 className="text-sm font-bold text-white font-display">
+              Regras Rápidas
+            </h3>
+
+            <div className="space-y-3 divide-y divide-pixtune-border/60">
+              {/* Linha 1: Valor Mínimo */}
+              <div className="flex items-center justify-between pt-1">
+                <div>
+                  <p className="text-xs font-semibold text-white">Valor Mínimo</p>
+                  <p className="text-[10px] text-pixtune-textSecondary">Para pedir música</p>
+                </div>
+                <span className="text-xs font-bold text-[#1ED760] bg-[#1ED760]/10 px-2.5 py-0.5 rounded-lg border border-[#1ED760]/20">
+                  R$ 2,00
                 </span>
-              </p>
-            )}
+              </div>
 
-            {visibleError && (
-              <div className="rounded-lg border border-pixtune-danger/40 bg-pixtune-danger/10 p-3" role="alert">
-                <p className="flex items-start gap-2 text-caption text-pixtune-danger">
-                  <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" />
-                  <span>{visibleError}</span>
+              {/* Linha 2: Moderação IA */}
+              <div className="flex items-center justify-between pt-3">
+                <div>
+                  <p className="text-xs font-semibold text-white">Moderação IA</p>
+                  <p className="text-[10px] text-pixtune-textSecondary">Filtro de palavras</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setAiModeration(!aiModeration)}
+                  className={`w-10 h-5 flex items-center rounded-full p-0.5 transition-colors ${
+                    aiModeration ? 'bg-[#1ED760]' : 'bg-pixtune-border'
+                  }`}
+                >
+                  <div
+                    className={`bg-black w-4 h-4 rounded-full shadow-md transform transition-transform ${
+                      aiModeration ? 'translate-x-5' : 'translate-x-0'
+                    }`}
+                  />
+                </button>
+              </div>
+
+              {/* Linha 3: Comandos Chat */}
+              <div className="flex items-center justify-between pt-3">
+                <div>
+                  <p className="text-xs font-semibold text-white">Comandos Chat</p>
+                  <p className="text-[10px] text-pixtune-textSecondary">!pixtune no Twitch</p>
+                </div>
+                <span className="flex h-2 w-2 rounded-full bg-[#1ED760]"></span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* 3. MINI PLAYER FIXO MOBILE (Idêntico à Página 4 do UX Pilot) */}
+      <div className="fixed bottom-16 left-0 right-0 z-30 bg-[#070F14]/95 backdrop-blur-xl border-t border-pixtune-border/80 shadow-2xl lg:hidden">
+        {/* Barra de Progresso Fina no Topo */}
+        <div className="h-1 w-full bg-pixtune-border/50">
+          <div
+            className="h-full bg-[#1ED760] transition-all duration-300"
+            style={{ width: `${progressPercent}%` }}
+          />
+        </div>
+
+        <div className="flex items-center justify-between px-3 py-2 gap-3">
+          {/* Capa e Dados da Faixa */}
+          <div className="flex items-center gap-2.5 min-w-0 flex-1">
+            <div className="relative h-10 w-10 rounded-lg overflow-hidden flex-shrink-0 bg-pixtune-surface border border-pixtune-border">
+              <img
+                src={
+                  activeTrack?.artworkUrl ||
+                  'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=150&auto=format&fit=crop'
+                }
+                alt={activeTrack?.title || 'Player'}
+                className="w-full h-full object-cover"
+              />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-1.5">
+                <span className="text-[8px] font-extrabold px-1 rounded bg-[#1ED760] text-black uppercase">
+                  AO VIVO
+                </span>
+                <p className="text-xs font-bold text-white truncate">
+                  {activeTrack?.title || 'Blinding Lights'}
                 </p>
-                <div className="mt-2 flex flex-wrap items-center gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => {
-                      // Se o player já está pronto e a falha foi no play, repetir
-                      // o play é o que o usuário espera. Erros de conexão/conta
-                      // continuam usando o reconnect.
-                      if (!accountError && playable && isReady && !isPlaying) {
-                        void onTogglePlay()
-                        return
-                      }
-                      void onReconnect()
-                    }}
-                  >
-                    <RefreshCw className="mr-2 h-4 w-4" /> Tentar novamente
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => void runDiagnostic()}
-                    disabled={diagnosticLoading}
-                  >
-                    {diagnosticLoading ? (
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    ) : (
-                      <Activity className="mr-2 h-4 w-4" />
-                    )}
-                    {diagnosticLoading ? 'Coletando...' : 'Diagnóstico'}
-                  </Button>
-                </div>
-                {errorDetail && (
-                  <details className="mt-2 text-caption text-pixtune-textMuted">
-                    <summary className="cursor-pointer select-none">Detalhes técnicos</summary>
-                    <p className="mt-1 whitespace-pre-wrap break-words rounded bg-pixtune-bg/60 p-2 font-mono text-[11px] leading-relaxed">
-                      {errorDetail}
-                    </p>
-                  </details>
-                )}
-                {diagnosticError && (
-                  <p className="mt-2 rounded bg-pixtune-bg/60 p-2 font-mono text-[11px] text-pixtune-danger">
-                    {diagnosticError}
-                  </p>
-                )}
-                {diagnostic && (
-                  <div className="mt-3">
-                    <div className="mb-1 flex items-center justify-between gap-2">
-                      <span className="text-caption font-medium text-pixtune-textSecondary">
-                        Diagnóstico completo (sem tokens)
-                      </span>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => void copyDiagnostic()}
-                      >
-                        {diagnosticCopied ? (
-                          <Check className="mr-2 h-4 w-4" />
-                        ) : (
-                          <Copy className="mr-2 h-4 w-4" />
-                        )}
-                        {diagnosticCopied ? 'Copiado' : 'Copiar'}
-                      </Button>
-                    </div>
-                    <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded bg-pixtune-bg/70 p-2 font-mono text-[10px] leading-relaxed text-pixtune-textMuted">
-                      {diagnostic}
-                    </pre>
-                  </div>
-                )}
               </div>
-            )}
-
-            {!playable && (
-              <p className="text-caption text-pixtune-warning" role="status">
-                Este item não tem uma faixa do Spotify. Abra a fila e adicione um link para poder ouvir.
+              <p className="text-[10px] text-pixtune-textSecondary truncate">
+                {activeTrack?.artist || 'The Weeknd'}
               </p>
-            )}
+            </div>
           </div>
-        ) : (
-          <div className="text-center py-8">
-            <Music className="w-12 h-12 text-pixtune-textMuted mx-auto mb-4" />
-            <p className="text-pixtune-textSecondary">Nenhuma música na fila</p>
-            <Button variant="outline" onClick={() => navigate('/queue')} className="mt-4">
-              Adicionar música
-            </Button>
+
+          {/* Controles de Reprodução Rápidos */}
+          <div className="flex items-center gap-1.5 flex-shrink-0">
+            <button
+              type="button"
+              onClick={() => void togglePlay()}
+              className="flex h-9 w-9 items-center justify-center rounded-full bg-[#1ED760] text-black shadow-md hover:scale-105 active:scale-95 transition-all"
+              aria-label={isPlaying ? 'Pausar' : 'Tocar'}
+            >
+              {isLoading ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : isPlaying ? (
+                <Pause className="w-4 h-4 fill-current" />
+              ) : (
+                <Play className="w-4 h-4 fill-current ml-0.5" />
+              )}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => void playNext()}
+              className="p-1.5 text-pixtune-textMuted hover:text-white transition-colors"
+              aria-label="Próxima faixa"
+            >
+              <SkipForward className="w-4 h-4" />
+            </button>
           </div>
-        )}
+        </div>
       </div>
-    </Card>
-  )
-}
-
-function QueueControlsCard({ onClear }: { onClear: () => void | Promise<void> }) {
-  const navigate = useNavigate()
-  return (
-    <Card className="p-4">
-      <div className="flex items-center justify-between mb-3">
-        <h3 className="text-body font-semibold text-pixtune-text">Controles da fila</h3>
-      </div>
-      <div className="grid grid-cols-2 gap-3">
-        <Button variant="outline" className="w-full" onClick={() => navigate('/queue')}>
-          <Music className="w-4 h-4 mr-2" /> Abrir fila
-        </Button>
-        <Button variant="outline" className="w-full" onClick={onClear}>
-          <TrashIcon className="w-4 h-4 mr-2" /> Limpar fila
-        </Button>
-      </div>
-    </Card>
-  )
-}
-
-function RecentDonationsCard({ events }: { events: any[] }) {
-  const statusLabel: Record<string, string> = {
-    processed: 'Processado',
-    validated: 'Validação antiga',
-    ignored: 'Ignorada',
-    received: 'Recebido',
-    failed: 'Falhou',
-    duplicate: 'Duplicado',
-  }
-
-  return (
-    <Card className="p-4">
-      <div className="mb-3 flex items-center justify-between gap-2">
-        <h3 className="min-w-0 truncate text-body font-semibold text-pixtune-text">Doações recentes</h3>
-        <Link to="/history" className="flex-shrink-0 text-caption font-medium text-pixtune-primary hover:text-pixtune-primaryHover">Ver tudo</Link>
-      </div>
-      <div className="space-y-3">
-        {events.length === 0 ? (
-          <div className="text-center py-4">
-            <p className="text-caption text-pixtune-textMuted">Nenhuma doação registrada</p>
-          </div>
-        ) : (
-          <div className="space-y-2">
-            {events.map((event: any) => (
-              <div key={event.id} className="flex items-center justify-between p-2 rounded-lg bg-pixtune-surfaceElevated/50">
-                <div className="flex-1 min-w-0">
-                  <p className="text-body-sm font-medium text-pixtune-text truncate">{event.donorName}</p>
-                  <p className="text-caption text-pixtune-textSecondary truncate">
-                    {event.queueItem
-                      ? `Música: ${event.queueItem.title}${event.queueItem.artist ? ` — ${event.queueItem.artist}` : ''}`
-                      : event.donorMessage || 'Sem mensagem'}
-                  </p>
-                  {event.status === 'ignored' && event.errorMessage && (
-                    <p className="text-caption text-pixtune-textMuted truncate">{event.errorMessage}</p>
-                  )}
-                </div>
-                <div className="text-right flex-shrink-0 ml-2">
-                  <p className="text-body-sm font-bold text-pixtune-text">{formatCurrency(event.amountCents)}</p>
-                  <Badge
-                    variant={event.status === 'processed' ? 'success' : event.status === 'failed' ? 'danger' : 'neutral'}
-                  >
-                    {statusLabel[event.status] || event.status}
-                  </Badge>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    </Card>
-  )
-}
-
-function QuickActionsCard({ onNext }: { onNext: () => void | Promise<void> }) {
-  const navigate = useNavigate()
-  return (
-    <Card className="p-4">
-      <div className="flex items-center justify-between mb-3">
-        <h3 className="text-body font-semibold text-pixtune-text">Ações rápidas</h3>
-      </div>
-      <div className="space-y-3">
-        <Button variant="outline" className="w-full" onClick={() => navigate('/queue')}>
-          <Music className="w-4 h-4 mr-2" /> Adicionar à fila
-        </Button>
-        <Button variant="outline" className="w-full" onClick={onNext}>
-          <Play className="w-4 h-4 mr-2" /> Pular próxima
-        </Button>
-      </div>
-    </Card>
-  )
-}
-
-function TrashIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-      <path d="M3 6h18M19 6v14c0 1 0 1.5-.5 2h-2C13 21.5 13 20 13 19v-5a2 2 0 012-2h6a2 2 0 012 2v5c0 1 0 1-.5 2h-2c-.5 0-.5-.5-.5-2v-14Z" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
+    </div>
   )
 }

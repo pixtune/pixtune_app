@@ -21,7 +21,7 @@ const DEFAULT_API_URL =
  * reintroduza o bug do Brave/Safari.
  */
 function resolveApiUrl(): string {
-  const configured = (import.meta.env.VITE_API_URL || '').trim()
+  const configured = (process.env.NEXT_PUBLIC_API_URL || '').trim()
   if (!configured) return DEFAULT_API_URL
 
   try {
@@ -161,6 +161,12 @@ export const apiAuth = {
 
   /** Encerra a sessão. */
   logout: () => request('/api/auth/logout', { method: 'POST' }),
+
+  /** Login no modo de teste / demonstração (acesso imediato sem OAuth). */
+  demoLogin: () =>
+    request<{ user: SpotifyUser; token: string }>('/api/auth/demo', {
+      method: 'POST',
+    }),
 }
 
 /** Redireciona o navegador para a tela de autorização do Spotify. */
