@@ -16,7 +16,6 @@
   },
   "dependencies": {
     "@hono/zod-validator": "^0.2.1",
-    "@next/swc-win32-x64-msvc": "^16.4.6",
     "@prisma/client": "^5.10.0",
     "@radix-ui/react-avatar": "^1.0.4",
     "@radix-ui/react-dropdown-menu": "^2.0.6",
