@@ -287,22 +287,6 @@ function DashboardContent({ children }: { children: React.ReactNode }) {
 
           {/* Lado Direito */}
           <div className="flex items-center gap-3 sm:gap-6 flex-shrink-0">
-            {/* Atalho de Configurações no celular (no desktop fica na sidebar) */}
-            <Link
-              href="/settings"
-              aria-label="Configurações"
-              aria-current={pathname === '/settings' ? 'page' : undefined}
-              title="Configurações"
-              className={cn(
-                'flex lg:hidden h-8 w-8 items-center justify-center rounded-lg border transition-colors',
-                pathname === '/settings'
-                  ? 'border-[#1ED760]/40 bg-[#1ED760]/15 text-[#1ED760]'
-                  : 'border-pixtune-border/80 bg-pixtune-surfaceElevated/60 text-pixtune-textMuted hover:border-pixtune-border hover:text-white'
-              )}
-            >
-              <Settings className="h-4 w-4" />
-            </Link>
-
             {/* Mobile: Pill Teste */}
             <div className="lg:hidden flex items-center gap-2">
               <button
@@ -412,6 +396,18 @@ function DashboardContent({ children }: { children: React.ReactNode }) {
         >
           <SlidersHorizontal className="w-5 h-5" />
           <span>Regras</span>
+        </Link>
+
+        <Link
+          href="/settings"
+          aria-label="Configurações"
+          className={cn(
+            'flex flex-col items-center justify-center flex-1 py-1 gap-1 text-[11px] font-medium transition-colors',
+            pathname === '/settings' ? 'text-[#1ED760]' : 'text-pixtune-textMuted hover:text-white'
+          )}
+        >
+          <Settings className="w-5 h-5" />
+          <span>Config</span>
         </Link>
       </nav>
 
