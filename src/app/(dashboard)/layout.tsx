@@ -164,6 +164,21 @@ function DashboardContent({ children }: { children: React.ReactNode }) {
             <SlidersHorizontal className="w-5 h-5 flex-shrink-0" />
             {!sidebarOpen ? null : <span>Regras da Live</span>}
           </Link>
+
+          <Link
+            href="/settings"
+            onClick={() => setMobileMenuOpen(false)}
+            className={cn(
+              'flex items-center gap-3 px-3 py-2.5 rounded-xl text-body-sm transition-all duration-150',
+              pathname === '/settings'
+                ? 'bg-[#1ED760]/10 text-[#1ED760] font-semibold border border-[#1ED760]/20'
+                : 'text-pixtune-textSecondary hover:text-white hover:bg-pixtune-surfaceElevated',
+              !sidebarOpen && 'justify-center px-2'
+            )}
+          >
+            <Settings className="w-5 h-5 flex-shrink-0" />
+            {!sidebarOpen ? null : <span>Configurações</span>}
+          </Link>
         </nav>
 
         {/* Rodapé da Sidebar idêntico à Página 1 do documento */}
@@ -272,14 +287,14 @@ function DashboardContent({ children }: { children: React.ReactNode }) {
 
           {/* Lado Direito */}
           <div className="flex items-center gap-3 sm:gap-6 flex-shrink-0">
-            {/* Atalho fixo para Configurações — sempre visível, inclusive no mobile */}
+            {/* Atalho de Configurações no celular (no desktop fica na sidebar) */}
             <Link
               href="/settings"
               aria-label="Configurações"
               aria-current={pathname === '/settings' ? 'page' : undefined}
               title="Configurações"
               className={cn(
-                'flex h-8 w-8 items-center justify-center rounded-lg border transition-colors',
+                'flex lg:hidden h-8 w-8 items-center justify-center rounded-lg border transition-colors',
                 pathname === '/settings'
                   ? 'border-[#1ED760]/40 bg-[#1ED760]/15 text-[#1ED760]'
                   : 'border-pixtune-border/80 bg-pixtune-surfaceElevated/60 text-pixtune-textMuted hover:border-pixtune-border hover:text-white'
