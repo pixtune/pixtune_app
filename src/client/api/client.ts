@@ -231,6 +231,39 @@ export interface LivePixAccount {
   displayName?: string
 }
 
+export interface LivePixWebhookStatus {
+  /** URL atualmente registrada (ou a esperada, quando ainda não registrada). */
+  url: string | null
+  /** URL que o PixTune espera que o LivePix chame. */
+  expectedUrl: string | null
+  /** ID do webhook no LivePix, quando conhecido. */
+  id: string | null
+  registered: boolean
+  matchesExpected: boolean
+  syncedAt: string | null
+  lastError: string | null
+  /** Caminho relativo com o token exclusivo do streamer. */
+  path: string
+}
+
+export interface LivePixRemoteWebhook {
+  id: string
+  url: string
+  /** True quando este é o webhook atual do PixTune. */
+  current: boolean
+}
+
+export interface LivePixWebhookSyncResult extends LivePixWebhookStatus {
+  created: boolean
+  removed: number
+  errors: string[]
+}
+
+export interface LivePixWebhookRemoveResult extends LivePixWebhookStatus {
+  removed: number
+  error: string | null
+}
+
 export interface LivePixConfigStatus {
   configured: boolean
   connected: boolean
@@ -242,6 +275,7 @@ export interface LivePixConfigStatus {
   webhookUrl?: string
   webhookToken?: string
   webhookPath?: string
+  webhook?: LivePixWebhookStatus
 }
 
 export interface LivePixActionResult {
@@ -253,6 +287,8 @@ export interface LivePixActionResult {
   webhookPath?: string
   remoteWebhooksRemoved?: number
   warning?: string | null
+  webhook?: LivePixWebhookStatus
+  webhookWarning?: string | null
 }
 
 export const apiDonations = {
@@ -273,6 +309,18 @@ export const apiDonations = {
   /** Apaga credenciais/tokens e tenta remover o webhook no LivePix. */
   disconnectConfig: () =>
     request<LivePixActionResult>('/api/donations/config/disconnect', { method: 'POST' }),
+
+  /** Registra ou repara o webhook oficial do LivePix (idempotente). */
+  syncWebhook: () =>
+    request<LivePixWebhookSyncResult>('/api/donations/config/webhook/sync', { method: 'POST' }),
+
+  /** Remove do LivePix os webhooks desta instalação. */
+  removeWebhook: () =>
+    request<LivePixWebhookRemoveResult>('/api/donations/config/webhook', { method: 'DELETE' }),
+
+  /** Lista os webhooks remotos para diagnóstico. */
+  listWebhooks: () =>
+    request<{ webhooks: LivePixRemoteWebhook[] }>('/api/donations/config/webhooks'),
 }
 
 // ============================================================

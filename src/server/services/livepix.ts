@@ -546,6 +546,58 @@ export async function saveLivePixConfig(
   })
 }
 
+/** Lê o metadata bruto da integração LivePix (nunca inclui tokens OAuth). */
+export async function getLivePixMetadata(
+  userId: string
+): Promise<Record<string, unknown>> {
+  const integration = await prisma.integration.findUnique({
+    where: { userId_type: { userId, type: 'livepix' } },
+  })
+  return parseMetadata(integration?.metadata)
+}
+
+/**
+ * Atualiza apenas as chaves informadas no metadata da integração.
+ *
+ * Usado pelo sistema de webhook para gravar id/URL/última sincronização sem
+ * apagar credenciais nem o token exclusivo do streamer. Um valor `undefined`
+ * remove a chave.
+ */
+export async function updateLivePixMetadata(
+  userId: string,
+  patch: Record<string, unknown>
+): Promise<void> {
+  const integration = await prisma.integration.findUnique({
+    where: { userId_type: { userId, type: 'livepix' } },
+  })
+  const meta: Record<string, unknown> = {
+    ...parseMetadata(integration?.metadata),
+    provider: 'gg',
+  }
+
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === undefined) delete meta[key]
+    else meta[key] = value
+  }
+
+  if (integration) {
+    await prisma.integration.update({
+      where: { id: integration.id },
+      data: { metadata: JSON.stringify(meta) },
+    })
+    return
+  }
+
+  await prisma.integration.create({
+    data: {
+      userId,
+      type: 'livepix',
+      name: 'LivePix',
+      metadata: JSON.stringify(meta),
+    },
+  })
+}
+
 /** Conta LivePix validada por último (cache) e quando isso aconteceu. */
 export async function getLivePixAccount(userId: string): Promise<{
   account: LivePixAccountInfo | null
@@ -603,10 +655,14 @@ export async function disconnectLivePix(userId: string): Promise<{
       const service = new LivePixService(config, userId)
       const webhooks = await service.listWebhooks()
       const webhookToken = typeof meta.webhookToken === 'string' ? meta.webhookToken : null
-      const ours = webhooks.filter((hook) =>
-        webhookToken
-          ? hook.url.includes(webhookToken)
-          : hook.url.includes('/api/donations/webhook/')
+      const webhookId = typeof meta.webhookId === 'string' ? meta.webhookId : null
+      // Remove apenas webhooks desta instalação: o token exclusivo, o id
+      // registrado pelo PixTune ou o caminho público do PixTune.
+      const ours = webhooks.filter(
+        (hook) =>
+          (webhookId !== null && hook.id === webhookId) ||
+          (webhookToken !== null && hook.url.includes(webhookToken)) ||
+          hook.url.includes('/api/donations/webhook/')
       )
       for (const hook of ours) {
         try {
@@ -626,6 +682,9 @@ export async function disconnectLivePix(userId: string): Promise<{
   delete nextMeta.clientSecret
   delete nextMeta.webhookUrl
   delete nextMeta.webhookSecret
+  delete nextMeta.webhookId
+  delete nextMeta.webhookSyncedAt
+  delete nextMeta.webhookLastError
   delete nextMeta.accountId
   delete nextMeta.accountUsername
   delete nextMeta.accountDisplayName

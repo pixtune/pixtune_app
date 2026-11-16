@@ -12,6 +12,15 @@ import {
   findUserIdByWebhookToken,
   LivePixService,
 } from '../services/livepix.js'
+// Configuração automática do webhook oficial (referência:
+// https://docs.livepix.gg/api).
+import {
+  getLivePixWebhookStatus,
+  syncLivePixWebhook,
+  removeLivePixWebhook,
+  listLivePixWebhooks,
+  type LivePixWebhookStatus,
+} from '../services/livepixWebhook.js'
 import prisma from '../lib/prisma.js'
 import {
   detectSpotifySongRequest,
@@ -556,6 +565,8 @@ donations.get('/config', authMiddleware, async (c) => {
   const { account, lastVerifiedAt } = await getLivePixAccount(userId)
 
   const configured = !!(config?.clientId && config?.clientSecret)
+  // Status do webhook calculado a partir do metadata (sem chamar o LivePix).
+  const webhook = await getLivePixWebhookStatus(userId)
 
   return c.json({
     success: true,
@@ -569,9 +580,10 @@ donations.get('/config', authMiddleware, async (c) => {
       clientId: config?.clientId ?? '',
       hasSecret: Boolean(config?.clientSecret),
       provider: 'gg',
-      webhookUrl: config?.webhookUrl,
+      webhookUrl: webhook.url ?? config?.webhookUrl,
       webhookToken,
       webhookPath: `/api/donations/webhook/${webhookToken}`,
+      webhook,
     },
   })
 })
@@ -710,6 +722,18 @@ donations.post('/config', authMiddleware, zValidator('json', livepixConfigSchema
     health.account
   )
 
+  // Registra/repaira o webhook automaticamente. Uma falha remota (ex.: escopo
+  // `webhooks` ausente) não invalida as credenciais já salvas: devolvemos um
+  // aviso e o streamer pode tentar de novo em Configurações > Live Pix.
+  let webhook: LivePixWebhookStatus = await getLivePixWebhookStatus(userId)
+  let webhookWarning: string | null = null
+  try {
+    webhook = await syncLivePixWebhook(userId)
+  } catch (error) {
+    webhookWarning = error instanceof Error ? error.message : String(error)
+    webhook = await getLivePixWebhookStatus(userId)
+  }
+
   const webhookToken = await getOrCreateWebhookToken(userId)
 
   return c.json({
@@ -721,6 +745,8 @@ donations.post('/config', authMiddleware, zValidator('json', livepixConfigSchema
       lastVerifiedAt: new Date().toISOString(),
       webhookToken,
       webhookPath: `/api/donations/webhook/${webhookToken}`,
+      webhook,
+      webhookWarning,
     },
   })
 })
@@ -765,12 +791,25 @@ donations.post('/config/verify', authMiddleware, async (c) => {
     health.account
   )
 
+  // Reaproveita a verificação para garantir que o webhook continua apontando
+  // para a URL pública atual (best-effort: não falha a verificação).
+  let webhook: LivePixWebhookStatus = await getLivePixWebhookStatus(userId)
+  let webhookWarning: string | null = null
+  try {
+    webhook = await syncLivePixWebhook(userId)
+  } catch (error) {
+    webhookWarning = error instanceof Error ? error.message : String(error)
+    webhook = await getLivePixWebhookStatus(userId)
+  }
+
   return c.json({
     success: true,
     data: {
       connected: true,
       account: health.account ?? null,
       lastVerifiedAt: new Date().toISOString(),
+      webhook,
+      webhookWarning,
     },
   })
 })
@@ -793,8 +832,78 @@ donations.post('/config/disconnect', authMiddleware, async (c) => {
       warning: result.remoteError ?? null,
       webhookToken,
       webhookPath: `/api/donations/webhook/${webhookToken}`,
+      webhook: await getLivePixWebhookStatus(userId),
     },
   })
+})
+
+// ============================================================
+// Webhook oficial do LivePix — registro automático
+//
+// Referência: https://docs.livepix.gg/api
+//
+// O LivePix exige que a URL seja registrada via POST /v2/webhooks. Estes
+// endpoints permitem registrar/reparar (idempotente), remover e inspecionar os
+// webhooks da conta sem sair do PixTune.
+// ============================================================
+
+// Sincroniza (registra ou repara) o webhook desta instalação.
+donations.post('/config/webhook/sync', authMiddleware, async (c) => {
+  const userId = getUserId(c)
+
+  try {
+    const result = await syncLivePixWebhook(userId)
+    return c.json({ success: true, data: result })
+  } catch (error) {
+    logEvent('error', 'donation.webhook_sync_failed', {
+      userId,
+      error: describeError(error),
+    })
+    return c.json(
+      {
+        success: false,
+        error: {
+          code: 'WEBHOOK_SYNC_FAILED',
+          message:
+            error instanceof Error
+              ? error.message
+              : 'Não foi possível sincronizar o webhook com o LivePix.',
+        },
+      },
+      422
+    )
+  }
+})
+
+// Remove do LivePix os webhooks desta instalação (mantém o token do streamer).
+donations.delete('/config/webhook', authMiddleware, async (c) => {
+  const userId = getUserId(c)
+  const result = await removeLivePixWebhook(userId)
+  return c.json({ success: true, data: result })
+})
+
+// Lista os webhooks remotos para diagnóstico (qual é o atual do PixTune).
+donations.get('/config/webhooks', authMiddleware, async (c) => {
+  const userId = getUserId(c)
+
+  try {
+    const webhooks = await listLivePixWebhooks(userId)
+    return c.json({ success: true, data: { webhooks } })
+  } catch (error) {
+    return c.json(
+      {
+        success: false,
+        error: {
+          code: 'LIVEPIX_ERROR',
+          message:
+            error instanceof Error
+              ? error.message
+              : 'Não foi possível consultar os webhooks no LivePix.',
+        },
+      },
+      422
+    )
+  }
 })
 
 export default donations

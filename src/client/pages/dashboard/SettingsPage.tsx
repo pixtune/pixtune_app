@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
-import { Zap, Music, ListMusic, Shield, Palette, User, LogOut, AlertCircle, Contrast, Accessibility, RefreshCw, Unplug, CheckCircle2, LayoutDashboard } from 'lucide-react'
+import { Zap, Music, ListMusic, Shield, Palette, User, LogOut, AlertCircle, Contrast, Accessibility, RefreshCw, Unplug, CheckCircle2, LayoutDashboard, Webhook, Trash2 } from 'lucide-react'
 import { Button } from '@client/components/ui/Button'
 import { Card } from '@client/components/ui/Card'
 import { Input } from '@client/components/ui/Input'
@@ -354,7 +354,9 @@ function LivePixSettings({
   setForm: any
   onReload: () => Promise<void>
 }) {
-  const [busy, setBusy] = useState<'save' | 'verify' | 'disconnect' | null>(null)
+  const [busy, setBusy] = useState<
+    'save' | 'verify' | 'disconnect' | 'webhook-sync' | 'webhook-remove' | null
+  >(null)
   const [checking, setChecking] = useState(false)
   const [feedback, setFeedback] = useState<{ kind: 'success' | 'error'; text: string } | null>(null)
   const [verifyError, setVerifyError] = useState<string | null>(null)
@@ -363,6 +365,16 @@ function LivePixSettings({
   const connected = Boolean(config?.connected)
   const hasSecret = Boolean(config?.hasSecret)
   const account = config?.account as { username?: string; displayName?: string } | null
+  const webhook = config?.webhook as
+    | {
+        url: string | null
+        expectedUrl: string | null
+        registered: boolean
+        matchesExpected: boolean
+        syncedAt: string | null
+        lastError: string | null
+      }
+    | undefined
 
   // Ao abrir a seção, confirma na API do LivePix se as credenciais salvas
   // continuam válidas. Usa o token em cache (só emite novo se expirado), então
@@ -435,10 +447,28 @@ function LivePixSettings({
   // para copiar a URL do webhook.
   const showCredentialsForm = !configured || Boolean(verifyError) || (!connected && !checking)
 
+  // A URL canônica vem do servidor (derivada de APP_URL). O fallback usa a
+  // origem da página para funcionar em desenvolvimento.
   const webhookUrl =
-    typeof window !== 'undefined' && config?.webhookPath
+    webhook?.url ||
+    webhook?.expectedUrl ||
+    (typeof window !== 'undefined' && config?.webhookPath
       ? `${window.location.origin}${config.webhookPath}`
-      : ''
+      : '')
+
+  const webhookLabel = !configured
+    ? 'Aguardando credenciais'
+    : webhook?.matchesExpected
+      ? 'Registrado e atualizado'
+      : webhook?.registered
+        ? 'Registrado em outro endereço'
+        : 'Não registrado'
+
+  const webhookLabelClass = !configured
+    ? 'text-pixtune-textMuted'
+    : webhook?.matchesExpected
+      ? 'text-pixtune-success'
+      : 'text-yellow-400'
 
   async function handleSave() {
     if (!form.clientId.trim()) {
@@ -460,15 +490,23 @@ function LivePixSettings({
         clientSecret: form.clientSecret.trim() || undefined,
       })
       const username = res.data?.account?.username
+      const warning = res.data?.webhookWarning
       setForm((previous: any) => ({ ...previous, clientSecret: '' }))
       await onReload()
       notifyLivePixChanged()
-      setFeedback({
-        kind: 'success',
-        text: username
-          ? `Configuração salva e validada. Conectado à conta @${username}.`
-          : 'Configuração salva e validada na API do LivePix.',
-      })
+      setFeedback(
+        warning
+          ? {
+              kind: 'error',
+              text: `Credenciais salvas e validadas, mas o webhook não pôde ser registrado automaticamente: ${warning}`,
+            }
+          : {
+              kind: 'success',
+              text: username
+                ? `Configuração salva e validada. Conectado à conta @${username}. Webhook ativado.`
+                : 'Configuração salva e validada na API do LivePix. Webhook ativado.',
+            }
+      )
     } catch (err: any) {
       setFeedback({
         kind: 'error',
@@ -488,12 +526,20 @@ function LivePixSettings({
     try {
       const res = await apiDonations.verifyConfig()
       await onReload()
-      setFeedback({
-        kind: 'success',
-        text: res.data?.account?.username
-          ? `Conexão confirmada com a conta @${res.data.account.username}.`
-          : 'Conexão confirmada com a API do LivePix.',
-      })
+      const warning = res.data?.webhookWarning
+      setFeedback(
+        warning
+          ? {
+              kind: 'error',
+              text: `Conexão confirmada, mas o webhook não pôde ser sincronizado: ${warning}`,
+            }
+          : {
+              kind: 'success',
+              text: res.data?.account?.username
+                ? `Conexão confirmada com a conta @${res.data.account.username}. Webhook sincronizado.`
+                : 'Conexão confirmada com a API do LivePix. Webhook sincronizado.',
+            }
+      )
     } catch (err: any) {
       const message = err?.message || 'Falha ao verificar a conexão com o LivePix.'
       setVerifyError(message)
@@ -535,6 +581,75 @@ function LivePixSettings({
       )
     } catch (err: any) {
       setFeedback({ kind: 'error', text: err?.message || 'Não foi possível desconectar.' })
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  // Registra/repara o webhook oficial via API do LivePix (POST /v2/webhooks).
+  async function handleSyncWebhook() {
+    setBusy('webhook-sync')
+    setFeedback(null)
+    try {
+      const res = await apiDonations.syncWebhook()
+      await onReload()
+      notifyLivePixChanged()
+      const data = res.data
+      if (data?.errors?.length) {
+        setFeedback({
+          kind: 'error',
+          text: `Webhook atualizado com avisos: ${data.errors.join('; ')}`,
+        })
+      } else {
+        setFeedback({
+          kind: 'success',
+          text: data?.created
+            ? 'Webhook registrado no LivePix.'
+            : data?.removed
+              ? `Webhook atualizado. ${data.removed} duplicado(s) removido(s).`
+              : 'Webhook já estava atualizado no LivePix.',
+        })
+      }
+    } catch (err: any) {
+      setFeedback({
+        kind: 'error',
+        text: err?.message || 'Não foi possível registrar o webhook no LivePix.',
+      })
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  // Remove no LivePix os webhooks desta instalação (o token do streamer é mantido).
+  async function handleRemoveWebhook() {
+    const confirmed = window.confirm(
+      'Remover o webhook desta conta no LivePix? As doações deixarão de chegar até você ativar novamente.'
+    )
+    if (!confirmed) return
+
+    setBusy('webhook-remove')
+    setFeedback(null)
+    try {
+      const res = await apiDonations.removeWebhook()
+      await onReload()
+      const removed = res.data?.removed ?? 0
+      const error = res.data?.error
+      setFeedback(
+        error
+          ? {
+              kind: 'error',
+              text: `O webhook local foi limpo, mas o LivePix retornou: ${error}`,
+            }
+          : {
+              kind: 'success',
+              text:
+                removed > 0
+                  ? `${removed} webhook(s) removido(s) no LivePix.`
+                  : 'Nenhum webhook registrado no LivePix.',
+            }
+      )
+    } catch (err: any) {
+      setFeedback({ kind: 'error', text: err?.message || 'Não foi possível remover o webhook.' })
     } finally {
       setBusy(null)
     }
@@ -621,10 +736,15 @@ function LivePixSettings({
           </div>
         )}
 
-        <div className="space-y-2">
-          <label className="text-body-sm font-medium text-pixtune-textSecondary">
-            URL de webhook desta conta
-          </label>
+        <div className="space-y-3 rounded-lg border border-pixtune-border bg-pixtune-surfaceElevated/50 p-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <Webhook className="h-4 w-4 text-pixtune-primary" />
+            <h3 className="text-body-sm font-medium text-pixtune-text">Webhook oficial</h3>
+            <span className={`ml-auto text-caption font-medium ${webhookLabelClass}`}>
+              {webhookLabel}
+            </span>
+          </div>
+
           <div className="flex gap-2">
             <Input
               id="streamerWebhook"
@@ -647,18 +767,50 @@ function LivePixSettings({
               Copiar
             </Button>
           </div>
+
           <p className="text-caption text-pixtune-textMuted">
-            Cadastre esta URL no painel do Live Pix. Ela contém um token exclusivo da sua conta e
-            fica disponível mesmo quando a conexão está ativa. Para receber doações reais, o PixTune
-            precisa estar acessível publicamente.
+            O PixTune registra esta URL automaticamente pela API oficial do LivePix
+            (POST /v2/webhooks). Ela contém um token exclusivo da sua conta e é recriada
+            quando o endereço público muda — não é preciso cadastrar nada no painel.
           </p>
+
+          {webhook?.lastError && (
+            <p className="text-caption text-pixtune-danger">Último erro: {webhook.lastError}</p>
+          )}
+          {webhook?.syncedAt && !webhook?.lastError && (
+            <p className="text-caption text-pixtune-textMuted">
+              Sincronizado em {new Date(webhook.syncedAt).toLocaleString('pt-BR')}
+            </p>
+          )}
+
+          <div className="flex flex-wrap items-center gap-3">
+            <Button
+              variant="secondary"
+              onClick={handleSyncWebhook}
+              disabled={busy !== null || !configured}
+              isLoading={busy === 'webhook-sync'}
+            >
+              <RefreshCw className="h-4 w-4" />{' '}
+              {webhook?.registered ? 'Reparar webhook' : 'Ativar webhook'}
+            </Button>
+            <Button
+              variant="ghost"
+              onClick={handleRemoveWebhook}
+              disabled={busy !== null || !configured || !webhook?.registered}
+              isLoading={busy === 'webhook-remove'}
+              className="text-pixtune-danger hover:bg-pixtune-danger/10 hover:text-pixtune-danger"
+            >
+              <Trash2 className="h-4 w-4" /> Remover webhook
+            </Button>
+          </div>
         </div>
 
         <div className="p-4 rounded-lg bg-pixtune-surfaceElevated/50 border border-pixtune-border">
           <h4 className="text-caption font-medium text-pixtune-textSecondary mb-2">Sobre o LivePix</h4>
           <p className="text-body-sm text-pixtune-textSecondary">
-            O PixTune usa a API oficial do LivePix. Nenhuma senha bancária ou credencial financeira
-            do doador é armazenada.
+            O PixTune usa a API oficial do LivePix (docs.livepix.gg/api). O webhook é
+            registrado e reparado automaticamente; nenhuma senha bancária ou credencial
+            financeira do doador é armazenada.
           </p>
         </div>
 
