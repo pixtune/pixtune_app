@@ -272,6 +272,22 @@ function DashboardContent({ children }: { children: React.ReactNode }) {
 
           {/* Lado Direito */}
           <div className="flex items-center gap-3 sm:gap-6 flex-shrink-0">
+            {/* Atalho fixo para Configurações — sempre visível, inclusive no mobile */}
+            <Link
+              href="/settings"
+              aria-label="Configurações"
+              aria-current={pathname === '/settings' ? 'page' : undefined}
+              title="Configurações"
+              className={cn(
+                'flex h-8 w-8 items-center justify-center rounded-lg border transition-colors',
+                pathname === '/settings'
+                  ? 'border-[#1ED760]/40 bg-[#1ED760]/15 text-[#1ED760]'
+                  : 'border-pixtune-border/80 bg-pixtune-surfaceElevated/60 text-pixtune-textMuted hover:border-pixtune-border hover:text-white'
+              )}
+            >
+              <Settings className="h-4 w-4" />
+            </Link>
+
             {/* Mobile: Pill Teste */}
             <div className="lg:hidden flex items-center gap-2">
               <button
