@@ -18,7 +18,6 @@ import {
   CircleOff,
   Loader2,
   Play,
-  Plus,
   Radio,
   Sparkles,
   Music,
@@ -367,17 +366,6 @@ function DashboardContent({ children }: { children: React.ReactNode }) {
           <ListMusic className="w-5 h-5" />
           <span>Fila</span>
         </Link>
-
-        {/* Botão Central Flutuante (+) Verde Néon da Página 4 */}
-        <div className="flex items-center justify-center flex-1 -mt-5">
-          <button
-            onClick={() => setPlaylistModalOpen(true)}
-            className="flex h-12 w-12 items-center justify-center rounded-full bg-[#1ED760] text-black shadow-lg shadow-[#1ED760]/30 hover:scale-105 active:scale-95 transition-all"
-            aria-label="Importar playlist ou adicionar música"
-          >
-            <Plus className="w-6 h-6 stroke-[2.5]" />
-          </button>
-        </div>
 
         <button
           onClick={() => setPlaylistModalOpen(true)}
